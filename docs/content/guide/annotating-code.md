@@ -136,6 +136,14 @@ steps:
     run: ./deploy.sh  # r[verify pipeline.deploy-step]
 ```
 
+**JSON5** (`.json5`) — `//` and `/* */` comments:
+```json5
+// r[impl config.schema]
+{
+  host: "localhost", /* r[verify config.schema] */
+}
+```
+
 ## StrictDoc-style markers (`@relation`)
 
 If your spec is authored in [StrictDoc](https://strictdoc.readthedocs.io/) — see [Writing Specs](writing-specs.md#strictdoc-format-sdoc) — tracey also recognises StrictDoc's `@relation(...)` annotation in source comments. The two syntaxes coexist freely; both produce references against the same spec.
