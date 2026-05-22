@@ -4509,6 +4509,7 @@ dependencies = [
  "arborium-swift",
  "arborium-typescript",
  "arborium-vb",
+ "arborium-yaml",
  "eyre",
  "facet",
  "globset",
