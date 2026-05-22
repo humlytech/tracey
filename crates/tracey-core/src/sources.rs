@@ -83,6 +83,7 @@ pub const SUPPORTED_EXTENSIONS: &[&str] = &[
     "nix",    // Nix
     "yml",    // YAML
     "yaml",   // YAML (alternate extension)
+    "json5",  // JSON5
 ];
 
 /// Check if a file extension is supported for scanning
@@ -555,6 +556,50 @@ mod tests {
     }
 
     #[test]
+    fn test_memory_sources_json5() {
+        let result = Reqs::extract(
+            MemorySources::new()
+                .add("config.json5", "// r[impl json5.req.one]")
+                .add("settings.json5", "// r[verify json5.req.two]")
+                .add("other.json5", "/* r[impl json5.req.three] */"),
+        )
+        .unwrap();
+
+        assert_eq!(result.reqs.len(), 3);
+        assert_eq!(result.reqs.references[0].req_id, "json5.req.one");
+        assert_eq!(result.reqs.references[1].req_id, "json5.req.two");
+        assert_eq!(result.reqs.references[2].req_id, "json5.req.three");
+        assert!(result.warnings.is_empty());
+    }
+
+    #[cfg(feature = "reverse")]
+    #[test]
+    fn test_memory_sources_json5_reverse() {
+        let result = Reqs::extract(
+            MemorySources::new()
+                .add("config.json5", "// r[impl json5.one]")
+                .add(
+                    "settings.json5",
+                    "{ key: 'value' /* r[verify json5.two] */ }",
+                ),
+        )
+        .unwrap();
+
+        assert_eq!(result.reqs.len(), 2);
+        assert_eq!(result.reqs.references[0].req_id, "json5.one");
+        assert_eq!(
+            result.reqs.references[0].verb,
+            crate::lexer::RefVerb::Impl
+        );
+        assert_eq!(result.reqs.references[1].req_id, "json5.two");
+        assert_eq!(
+            result.reqs.references[1].verb,
+            crate::lexer::RefVerb::Verify
+        );
+        assert!(result.warnings.is_empty());
+    }
+
+    #[test]
     fn test_memory_sources_mixed_languages() {
         let result = Reqs::extract(
             MemorySources::new()
@@ -625,6 +670,7 @@ mod tests {
 
         assert!(is_supported_extension(OsStr::new("yml")));
         assert!(is_supported_extension(OsStr::new("yaml")));
+        assert!(is_supported_extension(OsStr::new("json5")));
 
         assert!(!is_supported_extension(OsStr::new("md")));
         assert!(!is_supported_extension(OsStr::new("txt")));
