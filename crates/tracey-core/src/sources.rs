@@ -508,6 +508,53 @@ mod tests {
     }
 
     #[test]
+    fn test_memory_sources_yaml() {
+        let result = Reqs::extract(
+            MemorySources::new()
+                .add("config.yml", "# r[impl yaml.req.one]")
+                .add(
+                    "pipeline.yaml",
+                    "# r[impl yaml.req.two]\nsteps:\n  - name: build # r[verify yaml.req.three]",
+                ),
+        )
+        .unwrap();
+
+        assert_eq!(result.reqs.len(), 3);
+        assert_eq!(result.reqs.references[0].req_id, "yaml.req.one");
+        assert_eq!(result.reqs.references[1].req_id, "yaml.req.two");
+        assert_eq!(result.reqs.references[2].req_id, "yaml.req.three");
+        assert!(result.warnings.is_empty());
+    }
+
+    #[test]
+    fn test_memory_sources_yaml_all_verbs() {
+        let content = "# r[impl feat.one]\n# r[verify feat.two]\n# r[depends feat.three]\n# r[related feat.four]\n# r[define feat.five]\n";
+        let result = Reqs::extract(MemorySources::new().add("spec.yml", content)).unwrap();
+
+        assert_eq!(result.reqs.len(), 5);
+        assert_eq!(
+            result.reqs.references[0].verb,
+            crate::lexer::RefVerb::Impl
+        );
+        assert_eq!(
+            result.reqs.references[1].verb,
+            crate::lexer::RefVerb::Verify
+        );
+        assert_eq!(
+            result.reqs.references[2].verb,
+            crate::lexer::RefVerb::Depends
+        );
+        assert_eq!(
+            result.reqs.references[3].verb,
+            crate::lexer::RefVerb::Related
+        );
+        assert_eq!(
+            result.reqs.references[4].verb,
+            crate::lexer::RefVerb::Define
+        );
+    }
+
+    #[test]
     fn test_memory_sources_mixed_languages() {
         let result = Reqs::extract(
             MemorySources::new()

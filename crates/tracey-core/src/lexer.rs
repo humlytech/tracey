@@ -289,6 +289,11 @@ fn extract_from_content_text_based(path: &Path, content: &str, reqs: &mut Reqs) 
 
     let mut ignore_state = IgnoreState::default();
 
+    let is_yaml = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| matches!(e, "yml" | "yaml"));
+
     // Scan for comments and extract references
     for (line_idx, line) in content.lines().enumerate() {
         let line_num = LineNumber::from_zero_based(line_idx);
@@ -309,6 +314,26 @@ fn extract_from_content_text_based(path: &Path, content: &str, reqs: &mut Reqs) 
                     &file_code_mask,
                     reqs,
                 );
+            }
+        }
+
+        // For YAML files, also scan # line comments.
+        // YAML uses # as its only comment syntax; // and /* */ don't apply.
+        if is_yaml {
+            if let Some(comment_pos) = line.find('#') {
+                let comment = &line[comment_pos..];
+                let comment_start = line_start.add(comment_pos);
+
+                if check_ignore_directives(comment, line_num, &mut ignore_state) {
+                    extract_references_from_text(
+                        path,
+                        comment,
+                        comment_start,
+                        line_num,
+                        &file_code_mask,
+                        reqs,
+                    );
+                }
             }
         }
     }
