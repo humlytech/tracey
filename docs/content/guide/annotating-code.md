@@ -128,6 +128,14 @@ Tracey extracts annotations from comments in all major languages via tree-sitter
 /* r[verify buffer.allocation] */
 ```
 
+**YAML** (`.yml`, `.yaml`) — `#` line comments:
+```yaml
+# r[impl pipeline.deploy-step]
+steps:
+  - name: deploy
+    run: ./deploy.sh  # r[verify pipeline.deploy-step]
+```
+
 ## StrictDoc-style markers (`@relation`)
 
 If your spec is authored in [StrictDoc](https://strictdoc.readthedocs.io/) — see [Writing Specs](writing-specs.md#strictdoc-format-sdoc) — tracey also recognises StrictDoc's `@relation(...)` annotation in source comments. The two syntaxes coexist freely; both produce references against the same spec.
