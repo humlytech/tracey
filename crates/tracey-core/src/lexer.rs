@@ -278,6 +278,35 @@ fn check_ignore_directives(text: &str, line: LineNumber, state: &mut IgnoreState
     true
 }
 
+/// Find the byte position where a YAML line comment starts.
+///
+/// Per the YAML spec a `#` opens a comment only when it is at the start of the
+/// line (possibly after leading whitespace) or is immediately preceded by at
+/// least one whitespace character, AND is not inside a single- or double-quoted
+/// scalar.  A bare `#` embedded in a plain scalar — e.g. `url: http://x/#frag`
+/// — is NOT a comment.
+#[cfg(not(feature = "reverse"))]
+fn find_yaml_comment_start(line: &str) -> Option<usize> {
+    let mut in_single = false;
+    let mut in_double = false;
+    let mut prev: Option<char> = None;
+
+    for (idx, ch) in line.char_indices() {
+        match ch {
+            '\'' if !in_double => in_single = !in_single,
+            '"' if !in_single => in_double = !in_double,
+            '#' if !in_single && !in_double => {
+                if idx == 0 || prev.is_some_and(|p| p.is_whitespace()) {
+                    return Some(idx);
+                }
+            }
+            _ => {}
+        }
+        prev = Some(ch);
+    }
+    None
+}
+
 #[cfg(not(feature = "reverse"))]
 fn extract_from_content_text_based(path: &Path, content: &str, reqs: &mut Reqs) {
     // Track line starts for computing line numbers from byte offsets
@@ -302,7 +331,7 @@ fn extract_from_content_text_based(path: &Path, content: &str, reqs: &mut Reqs) 
         if is_yaml {
             // YAML uses # as its only comment syntax; skip // and /* */ scanning
             // entirely to avoid false positives (e.g. URLs containing //).
-            if let Some(comment_pos) = line.find('#') {
+            if let Some(comment_pos) = find_yaml_comment_start(line) {
                 let comment = &line[comment_pos..];
                 let comment_start = line_start.add(comment_pos);
 
@@ -1136,5 +1165,30 @@ pub fn reconnect() {}
         let content = "/* r[impl yaml.false-positive] */\n";
         let reqs = Reqs::extract_from_content(Path::new("config.yml"), content);
         assert_eq!(reqs.len(), 0, "/* */ should not be treated as a comment in YAML");
+    }
+
+    #[test]
+    fn test_yaml_hash_in_scalar_not_parsed() {
+        // '#' embedded in a plain scalar (no preceding whitespace) is not a comment.
+        let content = "url: https://example.com/#frag r[impl should.not.parse]\n";
+        let reqs = Reqs::extract_from_content(Path::new("config.yaml"), content);
+        assert_eq!(reqs.len(), 0, "# inside a scalar value must not be treated as a comment");
+    }
+
+    #[test]
+    fn test_yaml_hash_after_space_is_comment() {
+        // '#' preceded by whitespace is a valid YAML comment.
+        let content = "key: value # r[impl yaml.inline]\n";
+        let reqs = Reqs::extract_from_content(Path::new("config.yaml"), content);
+        assert_eq!(reqs.len(), 1);
+        assert_eq!(reqs.references[0].req_id, "yaml.inline");
+    }
+
+    #[test]
+    fn test_yaml_hash_in_quoted_scalar_not_parsed() {
+        // '#' inside a quoted string is not a comment.
+        let content = "msg: \"hello # r[impl yaml.false-positive]\"\n";
+        let reqs = Reqs::extract_from_content(Path::new("config.yaml"), content);
+        assert_eq!(reqs.len(), 0, "# inside a double-quoted scalar must not be a comment");
     }
 }
