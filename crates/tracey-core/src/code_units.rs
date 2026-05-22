@@ -1522,6 +1522,7 @@ pub fn extract_refs_with_warnings(path: &Path, source: &str) -> ExtractedRefs {
         "ml" | "mli" => arborium_ocaml::language(),
         "sh" | "bash" | "zsh" => arborium_bash::language(),
         "nix" => arborium_nix::language(),
+        "yml" | "yaml" => arborium_yaml::language(),
         _ => return ExtractedRefs::default(),
     };
 

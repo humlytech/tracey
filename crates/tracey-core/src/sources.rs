@@ -583,6 +583,33 @@ mod tests {
         assert!(result.warnings.is_empty());
     }
 
+    #[cfg(feature = "reverse")]
+    #[test]
+    fn test_memory_sources_yaml_reverse() {
+        let result = Reqs::extract(
+            MemorySources::new()
+                .add("config.yml", "# r[impl yaml.one]")
+                .add(
+                    "pipeline.yaml",
+                    "steps:\n  - name: build # r[verify yaml.two]\n",
+                ),
+        )
+        .unwrap();
+
+        assert_eq!(result.reqs.len(), 2);
+        assert_eq!(result.reqs.references[0].req_id, "yaml.one");
+        assert_eq!(
+            result.reqs.references[0].verb,
+            crate::lexer::RefVerb::Impl
+        );
+        assert_eq!(result.reqs.references[1].req_id, "yaml.two");
+        assert_eq!(
+            result.reqs.references[1].verb,
+            crate::lexer::RefVerb::Verify
+        );
+        assert!(result.warnings.is_empty());
+    }
+
     #[test]
     fn test_supported_extensions() {
         use std::ffi::OsStr;
