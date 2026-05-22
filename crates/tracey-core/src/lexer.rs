@@ -299,28 +299,27 @@ fn extract_from_content_text_based(path: &Path, content: &str, reqs: &mut Reqs) 
         let line_num = LineNumber::from_zero_based(line_idx);
         let line_start = line_starts.line_start_for_index(line_idx);
 
-        // Check for line comments (// or ///)
-        if let Some(comment_pos) = line.find("//") {
-            let comment = &line[comment_pos..];
-            let comment_start = line_start.add(comment_pos);
-
-            // Check ignore directives before extracting
-            if check_ignore_directives(comment, line_num, &mut ignore_state) {
-                extract_references_from_text(
-                    path,
-                    comment,
-                    comment_start,
-                    line_num,
-                    &file_code_mask,
-                    reqs,
-                );
-            }
-        }
-
-        // For YAML files, also scan # line comments.
-        // YAML uses # as its only comment syntax; // and /* */ don't apply.
         if is_yaml {
+            // YAML uses # as its only comment syntax; skip // and /* */ scanning
+            // entirely to avoid false positives (e.g. URLs containing //).
             if let Some(comment_pos) = line.find('#') {
+                let comment = &line[comment_pos..];
+                let comment_start = line_start.add(comment_pos);
+
+                if check_ignore_directives(comment, line_num, &mut ignore_state) {
+                    extract_references_from_text(
+                        path,
+                        comment,
+                        comment_start,
+                        line_num,
+                        &file_code_mask,
+                        reqs,
+                    );
+                }
+            }
+        } else {
+            // Check for line comments (// or ///)
+            if let Some(comment_pos) = line.find("//") {
                 let comment = &line[comment_pos..];
                 let comment_start = line_start.add(comment_pos);
 
@@ -338,40 +337,41 @@ fn extract_from_content_text_based(path: &Path, content: &str, reqs: &mut Reqs) 
         }
     }
 
-    // Handle block comments /* */
-    let mut in_block_comment = false;
-    let mut block_start = 0;
-    let mut block_line = LineNumber::from_one_based(1);
-    let mut i = 0;
-    let bytes = content.as_bytes();
+    // Handle block comments /* */ — not applicable to YAML.
+    if !is_yaml {
+        let mut in_block_comment = false;
+        let mut block_start = 0;
+        let mut block_line = LineNumber::from_one_based(1);
+        let mut i = 0;
+        let bytes = content.as_bytes();
 
-    while i < bytes.len() {
-        if in_block_comment {
-            if i + 1 < bytes.len() && bytes[i] == b'*' && bytes[i + 1] == b'/' {
-                let block_content = &content[block_start..i];
-                // Check ignore directives for block comments too
-                if check_ignore_directives(block_content, block_line, &mut ignore_state) {
-                    extract_references_from_text(
-                        path,
-                        block_content,
-                        ByteOffset::from_usize(block_start),
-                        block_line,
-                        &file_code_mask,
-                        reqs,
-                    );
+        while i < bytes.len() {
+            if in_block_comment {
+                if i + 1 < bytes.len() && bytes[i] == b'*' && bytes[i + 1] == b'/' {
+                    let block_content = &content[block_start..i];
+                    if check_ignore_directives(block_content, block_line, &mut ignore_state) {
+                        extract_references_from_text(
+                            path,
+                            block_content,
+                            ByteOffset::from_usize(block_start),
+                            block_line,
+                            &file_code_mask,
+                            reqs,
+                        );
+                    }
+                    in_block_comment = false;
+                    i += 2;
+                    continue;
                 }
-                in_block_comment = false;
+            } else if i + 1 < bytes.len() && bytes[i] == b'/' && bytes[i + 1] == b'*' {
+                in_block_comment = true;
+                block_start = i + 2;
+                block_line = line_starts.line_number_for_offset(ByteOffset::from_usize(i));
                 i += 2;
                 continue;
             }
-        } else if i + 1 < bytes.len() && bytes[i] == b'/' && bytes[i + 1] == b'*' {
-            in_block_comment = true;
-            block_start = i + 2;
-            block_line = line_starts.line_number_for_offset(ByteOffset::from_usize(i));
-            i += 2;
-            continue;
+            i += 1;
         }
-        i += 1;
     }
 }
 
@@ -1119,5 +1119,22 @@ pub fn reconnect() {}
         assert_eq!(reqs.len(), 5, "expected 5 references, got: {ids:?}");
         // Refines produces a warning
         assert_eq!(reqs.warnings.len(), 1);
+    }
+
+    #[test]
+    fn test_yaml_only_scans_hash_comments() {
+        // URLs with // must not produce false positives in YAML files.
+        let content = "url: https://example.com/api\n# r[impl yaml.endpoint]\npath: /v1\n";
+        let reqs = Reqs::extract_from_content(Path::new("config.yaml"), content);
+        assert_eq!(reqs.len(), 1, "only the # comment should be extracted");
+        assert_eq!(reqs.references[0].req_id, "yaml.endpoint");
+    }
+
+    #[test]
+    fn test_yaml_block_comment_syntax_not_scanned() {
+        // /* */ is not valid YAML comment syntax; must not be parsed as one.
+        let content = "/* r[impl yaml.false-positive] */\n";
+        let reqs = Reqs::extract_from_content(Path::new("config.yml"), content);
+        assert_eq!(reqs.len(), 0, "/* */ should not be treated as a comment in YAML");
     }
 }
