@@ -129,6 +129,7 @@ Tracey extracts annotations from comments in all major languages via tree-sitter
 ```
 
 **YAML** (`.yml`, `.yaml`) — `#` line comments:
+
 ```yaml
 # r[impl pipeline.deploy-step]
 steps:
@@ -137,6 +138,7 @@ steps:
 ```
 
 **JSON5** (`.json5`) — `//` and `/* */` comments:
+
 ```json5
 // r[impl config.schema]
 {
