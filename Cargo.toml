@@ -7,10 +7,10 @@ resolver = "3"
 ignored = ["facet-error"]
 
 [workspace.package]
-version = "1.4.0-humly.1"
+version = "1.4.0-humly.2"
 edition = "2024"
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/bearcove/tracey"
+repository = "https://github.com/humlytech/tracey"
 authors = ["Amos Wenger <amos@bearcove.eu>"]
 
 [workspace.dependencies]
