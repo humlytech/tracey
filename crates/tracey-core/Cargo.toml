@@ -2,7 +2,13 @@
 name = "tracey-core"
 version.workspace = true
 description = "Core library for tracey - spec coverage analysis"
-keywords = ["specification", "coverage", "traceability", "testing", "documentation"]
+keywords = [
+  "specification",
+  "coverage",
+  "traceability",
+  "testing",
+  "documentation",
+]
 categories = ["development-tools"]
 readme = "../../README.md"
 edition.workspace = true
@@ -52,6 +58,7 @@ reverse = [
   "dep:arborium-bash",
   "dep:arborium-nix",
   "dep:arborium-lean",
+  "dep:arborium-svelte",
   "dep:arborium-yaml",
 ]
 
@@ -98,4 +105,5 @@ arborium-ocaml = { workspace = true, optional = true }
 arborium-bash = { workspace = true, optional = true }
 arborium-nix = { workspace = true, optional = true }
 arborium-lean = { workspace = true, optional = true }
+arborium-svelte = { workspace = true, optional = true }
 arborium-yaml = { workspace = true, optional = true }
