@@ -147,6 +147,12 @@ enum Command {
         #[facet(args::named, default)]
         json: bool,
 
+        /// Answer the query in-process from a fresh one-shot scan instead of the
+        /// daemon (also enabled via the TRACEY_NO_DAEMON env var). Does not spawn
+        /// or contact a daemon; pays a full cold scan per invocation.
+        #[facet(args::named, default)]
+        no_daemon: bool,
+
         /// Query command to run
         #[facet(args::subcommand)]
         query: QueryCommand,
@@ -474,10 +480,20 @@ async fn main() -> Result<()> {
         }
 
         // r[impl daemon.cli.query]
-        Command::Query { root, json, query } => {
+        Command::Query {
+            root,
+            json,
+            no_daemon,
+            query,
+        } => {
             let project_root = root.unwrap_or_else(|| find_project_root().unwrap_or_default());
-            let query_client =
-                bridge::query::QueryClient::new(project_root, bridge::query::Caller::Cli);
+            let no_daemon = no_daemon || std::env::var_os("TRACEY_NO_DAEMON").is_some();
+            let query_client = if no_daemon {
+                bridge::query::QueryClient::new_in_process(project_root, bridge::query::Caller::Cli)
+                    .await?
+            } else {
+                bridge::query::QueryClient::new(project_root, bridge::query::Caller::Cli)
+            };
             init_tracing(TracingConfig {
                 log_file: None,
                 enable_console: !json,
