@@ -18,14 +18,91 @@ pub use tracey_proto::TraceyDaemonClient;
 #[derive(Clone)]
 pub struct DaemonClient {
     project_root: PathBuf,
+    backend: Backend,
+}
+
+/// Query backend: either the running daemon (over roam RPC) or an in-process
+/// snapshot built once for `--no-daemon` one-shot queries.
+#[derive(Clone)]
+enum Backend {
+    /// Talk to the daemon, autostarting it if necessary.
+    Daemon,
+    /// Answer queries from a freshly built snapshot without any daemon.
+    InProcess(std::sync::Arc<InProcessState>),
+}
+
+struct InProcessState {
+    data: std::sync::Arc<crate::data::DashboardData>,
+    config_error: Option<String>,
 }
 
 /// Create a new daemon client for the given project root.
 pub fn new_client(project_root: PathBuf) -> DaemonClient {
-    DaemonClient { project_root }
+    DaemonClient {
+        project_root,
+        backend: Backend::Daemon,
+    }
 }
 
 impl DaemonClient {
+    /// Build an in-process client that answers queries from a freshly built
+    /// snapshot, without spawning or contacting the daemon.
+    ///
+    /// Used by `tracey query --no-daemon`. Each invocation does a full cold
+    /// project scan (no warm cache), which is the accepted tradeoff for not
+    /// requiring a background daemon.
+    pub async fn in_process(project_root: PathBuf) -> eyre::Result<DaemonClient> {
+        use crate::config::Config;
+
+        let config_path = {
+            let default = project_root.join(".config/tracey/config.styx");
+            if default.exists() {
+                default
+            } else {
+                project_root.join("config.styx")
+            }
+        };
+
+        // Mirror the daemon's tolerant config handling: a missing config is fine
+        // (empty config), a malformed one surfaces as a banner but still serves.
+        let (config, mut config_error) = if !config_path.exists() {
+            (Config::default(), None)
+        } else {
+            match crate::load_config(&config_path) {
+                Ok(c) => (c, None),
+                Err(e) => (
+                    Config::default(),
+                    Some(format!(
+                        "Config file {} has errors:\n{}",
+                        config_path.display(),
+                        e
+                    )),
+                ),
+            }
+        };
+
+        let data = match crate::data::build_dashboard_data(&project_root, &config, 1, true).await {
+            Ok(data) => data,
+            Err(e) => {
+                // Semantic config error: keep serving with an empty config.
+                config_error = Some(format!(
+                    "Config file {} has errors:\n{}",
+                    config_path.display(),
+                    e
+                ));
+                crate::data::build_dashboard_data(&project_root, &Config::default(), 1, true).await?
+            }
+        };
+
+        Ok(DaemonClient {
+            project_root,
+            backend: Backend::InProcess(std::sync::Arc::new(InProcessState {
+                data: std::sync::Arc::new(data),
+                config_error,
+            })),
+        })
+    }
+
     async fn connect_inner(&self) -> io::Result<roam_stream::LocalLink> {
         let start = Instant::now();
         debug!(
@@ -107,12 +184,18 @@ impl DaemonClient {
     }
 
     pub async fn status(&self) -> Result<tracey_proto::StatusResponse, roam::RoamError> {
+        if let Backend::InProcess(state) = &self.backend {
+            return Ok(crate::bridge::query_exec::status(&state.data));
+        }
         self.with_client(|c| async move { c.status().await }).await
     }
     pub async fn uncovered(
         &self,
         req: tracey_proto::UncoveredRequest,
     ) -> Result<tracey_proto::UncoveredResponse, roam::RoamError> {
+        if let Backend::InProcess(state) = &self.backend {
+            return Ok(crate::bridge::query_exec::uncovered(&state.data, req));
+        }
         self.with_client(|c| async move { c.uncovered(req).await })
             .await
     }
@@ -120,6 +203,9 @@ impl DaemonClient {
         &self,
         req: tracey_proto::UntestedRequest,
     ) -> Result<tracey_proto::UntestedResponse, roam::RoamError> {
+        if let Backend::InProcess(state) = &self.backend {
+            return Ok(crate::bridge::query_exec::untested(&state.data, req));
+        }
         self.with_client(|c| async move { c.untested(req).await })
             .await
     }
@@ -127,6 +213,9 @@ impl DaemonClient {
         &self,
         req: tracey_proto::StaleRequest,
     ) -> Result<tracey_proto::StaleResponse, roam::RoamError> {
+        if let Backend::InProcess(state) = &self.backend {
+            return Ok(crate::bridge::query_exec::stale(&state.data, req));
+        }
         self.with_client(|c| async move { c.stale(req).await })
             .await
     }
@@ -134,6 +223,9 @@ impl DaemonClient {
         &self,
         req: tracey_proto::UnmappedRequest,
     ) -> Result<tracey_proto::UnmappedResponse, roam::RoamError> {
+        if let Backend::InProcess(state) = &self.backend {
+            return Ok(crate::bridge::query_exec::unmapped(&state.data, req));
+        }
         self.with_client(|c| async move { c.unmapped(req).await })
             .await
     }
@@ -141,10 +233,18 @@ impl DaemonClient {
         &self,
         rule_id: tracey_core::RuleId,
     ) -> Result<Option<tracey_proto::RuleInfo>, roam::RoamError> {
+        if let Backend::InProcess(state) = &self.backend {
+            return Ok(
+                crate::bridge::query_exec::rule(&state.data, &self.project_root, rule_id).await,
+            );
+        }
         self.with_client(|c| async move { c.rule(rule_id).await })
             .await
     }
     pub async fn config(&self) -> Result<tracey_api::ApiConfig, roam::RoamError> {
+        if let Backend::InProcess(state) = &self.backend {
+            return Ok(crate::bridge::query_exec::config(&state.data));
+        }
         self.with_client(|c| async move { c.config().await }).await
     }
     pub async fn vfs_open(&self, path: String, content: String) -> Result<(), roam::RoamError> {
@@ -166,6 +266,18 @@ impl DaemonClient {
         self.with_client(|c| async move { c.version().await }).await
     }
     pub async fn health(&self) -> Result<tracey_proto::HealthResponse, roam::RoamError> {
+        if let Backend::InProcess(state) = &self.backend {
+            return Ok(tracey_proto::HealthResponse {
+                version: 1,
+                watcher_active: false,
+                watcher_error: None,
+                config_error: state.config_error.clone(),
+                watcher_last_event_ms: None,
+                watcher_event_count: 0,
+                watched_directories: Vec::new(),
+                uptime_secs: 0,
+            });
+        }
         self.with_client(|c| async move { c.health().await }).await
     }
     pub async fn shutdown(&self) -> Result<(), roam::RoamError> {
@@ -336,6 +448,9 @@ impl DaemonClient {
         &self,
         req: tracey_proto::ValidateRequest,
     ) -> Result<tracey_api::ValidationResult, roam::RoamError> {
+        if let Backend::InProcess(state) = &self.backend {
+            return Ok(crate::bridge::query_exec::validate(&state.data, req));
+        }
         self.with_client(|c| async move { c.validate(req).await })
             .await
     }

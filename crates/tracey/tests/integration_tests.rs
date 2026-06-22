@@ -1372,3 +1372,65 @@ async fn test_test_include_counts_toward_verified() {
         impl_status.verified_rules
     );
 }
+
+// ============================================================================
+// In-process (--no-daemon) query backend
+// ============================================================================
+
+/// The in-process query backend (`tracey query --no-daemon`) must produce the
+/// same answers as the daemon-backed service over the same project.
+#[tokio::test]
+async fn test_in_process_query_matches_daemon() {
+    use tracey::daemon::DaemonClient;
+
+    // Daemon-backed service over the fixture.
+    let service = create_test_service().await;
+    // In-process client over the same fixture — no daemon spawned or contacted.
+    let local = DaemonClient::in_process(fixtures_dir())
+        .await
+        .expect("in-process client builds");
+
+    // status
+    let daemon_status = rpc(service.client.status().await);
+    let local_status = local.status().await.expect("in-process status");
+    assert_eq!(
+        format!("{daemon_status:?}"),
+        format!("{local_status:?}"),
+        "status must match between daemon and in-process"
+    );
+
+    // config
+    let daemon_cfg = rpc(service.client.config().await);
+    let local_cfg = local.config().await.expect("in-process config");
+    assert_eq!(
+        format!("{daemon_cfg:?}"),
+        format!("{local_cfg:?}"),
+        "config must match between daemon and in-process"
+    );
+
+    // uncovered
+    let req = UncoveredRequest {
+        spec: Some("test".to_string()),
+        impl_name: Some("rust".to_string()),
+        prefix: None,
+    };
+    let daemon_unc = rpc(service.client.uncovered(req.clone()).await);
+    let local_unc = local.uncovered(req).await.expect("in-process uncovered");
+    assert_eq!(
+        format!("{daemon_unc:?}"),
+        format!("{local_unc:?}"),
+        "uncovered must match between daemon and in-process"
+    );
+
+    // rule
+    let daemon_rule = rpc(service.client.rule(rid("data.format")).await);
+    let local_rule = local
+        .rule(rid("data.format"))
+        .await
+        .expect("in-process rule");
+    assert_eq!(
+        format!("{daemon_rule:?}"),
+        format!("{local_rule:?}"),
+        "rule must match between daemon and in-process"
+    );
+}

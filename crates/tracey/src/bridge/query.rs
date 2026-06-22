@@ -118,6 +118,15 @@ impl QueryClient {
         }
     }
 
+    /// Build a query client that answers in-process from a one-shot scan,
+    /// without spawning or contacting the daemon (`tracey query --no-daemon`).
+    pub async fn new_in_process(project_root: PathBuf, caller: Caller) -> eyre::Result<Self> {
+        Ok(Self {
+            client: DaemonClient::in_process(project_root).await?,
+            caller,
+        })
+    }
+
     /// Check for config errors and return a warning banner if present.
     async fn get_config_error_banner(&self) -> Option<String> {
         match self.client.health().await {

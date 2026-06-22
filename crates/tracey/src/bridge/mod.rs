@@ -9,3 +9,4 @@ pub mod http;
 pub mod lsp;
 pub mod mcp;
 pub mod query;
+pub mod query_exec;
