@@ -2087,6 +2087,20 @@ fn do_thing() {}
         }
     }
 
+    /// `extract` dispatches by extension separately from `extract_refs`, so the
+    /// two arms need separate coverage.
+    #[test]
+    fn test_extract_units_js_ts_extension_variants() {
+        let source = "// r[impl js.variant]\nfunction variant() {}\n";
+        for ext in ["js", "cjs", "mjs", "ts", "mts", "cts"] {
+            let path = format!("mod.{ext}");
+            let units = extract(Path::new(&path), source);
+            assert_eq!(units.len(), 1, "no code units extracted from .{ext} file");
+            assert_eq!(units.units[0].name.as_deref(), Some("variant"));
+            assert_eq!(units.units[0].req_refs, vec![rid("js.variant")]);
+        }
+    }
+
     #[test]
     fn test_extract_refs_byte_span_uses_inclusive_end() {
         let source = "// r[foo.bar]\n";

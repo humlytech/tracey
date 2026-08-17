@@ -691,16 +691,21 @@ mod tests {
 
     /// The extension gate in `WalkSources` runs *before* include patterns are
     /// consulted, so an unsupported extension can never be recovered by config.
-    /// This walks a real directory to prove `.cjs`/`.mjs` survive that gate.
+    /// This walks a real directory to prove the JS/TS module variants survive
+    /// that gate.
     #[cfg(feature = "walk")]
     #[test]
-    fn test_walk_sources_scans_cjs_and_mjs() {
+    fn test_walk_sources_scans_js_ts_module_variants() {
         let temp = tempfile::tempdir().expect("temp dir");
         let root = temp.path();
 
-        std::fs::write(root.join("legacy.cjs"), "// r[impl js.req.cjs]\n").unwrap();
-        std::fs::write(root.join("modern.mjs"), "// r[impl js.req.mjs]\n").unwrap();
-        std::fs::write(root.join("plain.js"), "// r[impl js.req.js]\n").unwrap();
+        for ext in ["js", "cjs", "mjs", "ts", "mts", "cts"] {
+            std::fs::write(
+                root.join(format!("mod.{ext}")),
+                format!("// r[impl js.req.{ext}]\n"),
+            )
+            .unwrap();
+        }
 
         let result = Reqs::extract(WalkSources::new(root)).unwrap();
 
@@ -712,7 +717,17 @@ mod tests {
             .collect();
         found.sort_unstable();
 
-        assert_eq!(found, vec!["js.req.cjs", "js.req.js", "js.req.mjs"]);
+        assert_eq!(
+            found,
+            vec![
+                "js.req.cjs",
+                "js.req.cts",
+                "js.req.js",
+                "js.req.mjs",
+                "js.req.mts",
+                "js.req.ts",
+            ]
+        );
     }
 
     #[cfg(feature = "walk")]
