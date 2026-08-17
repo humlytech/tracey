@@ -21,8 +21,12 @@ pub const SUPPORTED_EXTENSIONS: &[&str] = &[
     "swift",  // Swift
     "ts",     // TypeScript
     "tsx",    // TypeScript JSX
+    "mts",    // TypeScript ES module
+    "cts",    // TypeScript CommonJS
     "js",     // JavaScript
     "jsx",    // JavaScript JSX
+    "mjs",    // JavaScript ES module
+    "cjs",    // JavaScript CommonJS
     "go",     // Go
     "c",      // C
     "h",      // C headers
@@ -666,6 +670,10 @@ mod tests {
         assert!(is_supported_extension(OsStr::new("ts")));
         assert!(is_supported_extension(OsStr::new("tsx")));
         assert!(is_supported_extension(OsStr::new("js")));
+        assert!(is_supported_extension(OsStr::new("cjs")));
+        assert!(is_supported_extension(OsStr::new("mjs")));
+        assert!(is_supported_extension(OsStr::new("mts")));
+        assert!(is_supported_extension(OsStr::new("cts")));
         assert!(is_supported_extension(OsStr::new("go")));
         assert!(is_supported_extension(OsStr::new("php")));
         assert!(is_supported_extension(OsStr::new("nix")));
@@ -679,6 +687,47 @@ mod tests {
         assert!(!is_supported_extension(OsStr::new("md")));
         assert!(!is_supported_extension(OsStr::new("txt")));
         assert!(!is_supported_extension(OsStr::new("json")));
+    }
+
+    /// The extension gate in `WalkSources` runs *before* include patterns are
+    /// consulted, so an unsupported extension can never be recovered by config.
+    /// This walks a real directory to prove the JS/TS module variants survive
+    /// that gate.
+    #[cfg(feature = "walk")]
+    #[test]
+    fn test_walk_sources_scans_js_ts_module_variants() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let root = temp.path();
+
+        for ext in ["js", "cjs", "mjs", "ts", "mts", "cts"] {
+            std::fs::write(
+                root.join(format!("mod.{ext}")),
+                format!("// r[impl js.req.{ext}]\n"),
+            )
+            .unwrap();
+        }
+
+        let result = Reqs::extract(WalkSources::new(root)).unwrap();
+
+        let mut found: Vec<String> = result
+            .reqs
+            .references
+            .iter()
+            .map(|r| r.req_id.to_string())
+            .collect();
+        found.sort_unstable();
+
+        assert_eq!(
+            found,
+            vec![
+                "js.req.cjs",
+                "js.req.cts",
+                "js.req.js",
+                "js.req.mjs",
+                "js.req.mts",
+                "js.req.ts",
+            ]
+        );
     }
 
     #[cfg(feature = "walk")]
