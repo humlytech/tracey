@@ -155,7 +155,9 @@ pub fn extract(path: &Path, source: &str) -> CodeUnits {
         "go" => extract_go(path, source),
         "java" => extract_java(path, source),
         "py" => extract_python(path, source),
-        "ts" | "tsx" | "js" | "jsx" | "mts" | "cts" => extract_typescript(path, source),
+        "ts" | "tsx" | "js" | "jsx" | "mts" | "cts" | "mjs" | "cjs" => {
+            extract_typescript(path, source)
+        }
         "php" => extract_php(path, source),
         "c" | "h" => extract_c(path, source),
         "cpp" | "cc" | "cxx" | "hpp" => extract_cpp(path, source),
@@ -1526,7 +1528,7 @@ pub fn extract_refs_with_warnings(path: &Path, source: &str) -> ExtractedRefs {
         "py" => arborium_python::language(),
         // json5 shares // and /* */ comment syntax with JS/TS; reuse the TS grammar
         // so that tree-sitter can identify comment nodes in the reverse path.
-        "ts" | "tsx" | "js" | "jsx" | "mts" | "cts" | "json5" => {
+        "ts" | "tsx" | "js" | "jsx" | "mts" | "cts" | "mjs" | "cjs" | "json5" => {
             arborium_typescript::language()
         }
         "php" => arborium_php::language(),
@@ -2072,6 +2074,17 @@ fn do_thing() {}
         assert_eq!(refs.len(), 1, "Expected 1 ref, got {:?}", refs);
         assert_eq!(refs[0].req_id, "foo.bar");
         assert_eq!(refs[0].verb, "impl");
+    }
+
+    #[test]
+    fn test_extract_refs_js_ts_extension_variants() {
+        for ext in ["js", "cjs", "mjs", "ts", "mts", "cts"] {
+            let path = format!("mod.{ext}");
+            let refs = extract_refs(Path::new(&path), "// r[impl js.variant]\n");
+            assert_eq!(refs.len(), 1, "no refs extracted from .{ext} file");
+            assert_eq!(refs[0].req_id, "js.variant");
+            assert_eq!(refs[0].verb, "impl");
+        }
     }
 
     #[test]

@@ -262,8 +262,8 @@ Tracey MUST use tree-sitter for parsing source code to extract comments. This en
 > | Go         | `.go`                   | `//`, `/* */`                     |
 > | Java       | `.java`                 | `//`, `/* */`, `/** */`           |
 > | Python     | `.py`                   | `#`, `""" """`                    |
-> | TypeScript | `.ts`, `.tsx`, `.mts`   | `//`, `/* */`                     |
-> | JavaScript | `.js`, `.jsx`, `.cjs`   | `//`, `/* */`                     |
+> | TypeScript | `.ts`, `.tsx`, `.mts`, `.cts` | `//`, `/* */`               |
+> | JavaScript | `.js`, `.jsx`, `.cjs`, `.mjs` | `//`, `/* */`               |
 
 > r[ref.parser.unified]
 > The same tree-sitter based extraction MUST be used for both forward traceability (finding which requirements are implemented) and reverse traceability (finding which code units have requirement annotations).
