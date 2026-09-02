@@ -1434,3 +1434,147 @@ async fn test_in_process_query_matches_daemon() {
         "rule must match between daemon and in-process"
     );
 }
+
+/// Regression test for VIN-1784: validate used to walk only files from which the
+/// parser extracted at least one code unit, so dangling, version-ahead, and stale
+/// annotations in files with no function/class were silent.
+#[tokio::test]
+async fn test_validate_reports_references_in_files_without_code_units() {
+    let temp = tempfile::tempdir().expect("Failed to create temp dir");
+    let root = temp.path();
+
+    std::fs::create_dir_all(root.join("src")).expect("Failed to create src dir");
+    std::fs::write(
+        root.join("config.styx"),
+        r#"
+specs (
+  {
+    name test
+    include (spec.md)
+    impls (
+      {
+        name rust
+        include (src/**/*.ts src/**/*.yml src/**/*.rs)
+        test_include (src/**/*.test.ts)
+      }
+    )
+  }
+)
+"#,
+    )
+    .expect("Failed to write config");
+    std::fs::write(
+        root.join("spec.md"),
+        r#"
+r[auth.login+2]
+Users MUST provide valid credentials to log in.
+
+r[data.format]
+Email addresses MUST be validated.
+"#,
+    )
+    .expect("Failed to write spec");
+
+    // A file with a real code unit, so the impl is not empty.
+    std::fs::write(
+        root.join("src/lib.rs"),
+        "// r[impl data.format]\npub fn validate_email() {}\n",
+    )
+    .expect("Failed to write src/lib.rs");
+
+    // TypeScript with only top-level statements: no code units are extracted.
+    std::fs::write(
+        root.join("src/no-units.ts"),
+        r#"
+// r[impl ghost.namespace.nothing]
+// r[impl auth.login+9]
+// r[impl auth.login]
+export const probe = 1;
+"#,
+    )
+    .expect("Failed to write src/no-units.ts");
+
+    // YAML can never yield a code unit.
+    std::fs::write(
+        root.join("src/pipeline.yml"),
+        "# r[impl ghost.yaml.missing]\nname: pipeline\n",
+    )
+    .expect("Failed to write src/pipeline.yml");
+
+    // A test file whose annotations sit outside any code unit.
+    std::fs::write(
+        root.join("src/probe.test.ts"),
+        "// r[verify ghost.verify.missing]\nexport const cases = [];\n",
+    )
+    .expect("Failed to write src/probe.test.ts");
+
+    let engine = Arc::new(
+        tracey::daemon::Engine::new(root.to_path_buf(), root.join("config.styx"))
+            .await
+            .expect("Failed to create engine"),
+    );
+    let service = tracey::daemon::TraceyService::new(engine);
+    let rpc_service = common::create_test_rpc_service(service).await;
+
+    let result = rpc(rpc_service
+        .client
+        .validate(ValidateRequest {
+            spec: Some("test".to_string()),
+            impl_name: Some("rust".to_string()),
+        })
+        .await);
+
+    let has = |code: ValidationErrorCode, file: &str, needle: &str| {
+        result.errors.iter().any(|e| {
+            e.code == code
+                && e.file.as_deref().is_some_and(|f| f.ends_with(file))
+                && e.message.contains(needle)
+        })
+    };
+
+    assert!(
+        has(
+            ValidationErrorCode::UnknownRequirement,
+            "no-units.ts",
+            "ghost.namespace.nothing"
+        ),
+        "Expected a dangling r[impl] in a .ts file without code units to be reported, got: {:?}",
+        result.errors
+    );
+    assert!(
+        has(
+            ValidationErrorCode::UnknownRequirement,
+            "no-units.ts",
+            "auth.login+9"
+        ),
+        "Expected a version-ahead r[impl] in a .ts file without code units to be reported, got: {:?}",
+        result.errors
+    );
+    assert!(
+        has(
+            ValidationErrorCode::StaleRequirement,
+            "no-units.ts",
+            "auth.login"
+        ),
+        "Expected a stale r[impl] in a .ts file without code units to be reported, got: {:?}",
+        result.errors
+    );
+    assert!(
+        has(
+            ValidationErrorCode::UnknownRequirement,
+            "pipeline.yml",
+            "ghost.yaml.missing"
+        ),
+        "Expected a dangling r[impl] in a .yml file to be reported, got: {:?}",
+        result.errors
+    );
+    assert!(
+        has(
+            ValidationErrorCode::UnknownRequirement,
+            "probe.test.ts",
+            "ghost.verify.missing"
+        ),
+        "Expected a dangling r[verify] in a test file without code units to be reported, got: {:?}",
+        result.errors
+    );
+}
