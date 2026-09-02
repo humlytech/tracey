@@ -1441,7 +1441,10 @@ async fn test_in_process_query_matches_daemon() {
 #[tokio::test]
 async fn test_validate_reports_references_in_files_without_code_units() {
     let temp = tempfile::tempdir().expect("Failed to create temp dir");
-    let root = temp.path();
+    // Canonicalize: on macOS the temp dir is reached through a symlink, and
+    // test_include matching keys on the project root as given.
+    let root_buf = temp.path().canonicalize().expect("canonicalize temp dir");
+    let root = root_buf.as_path();
 
     std::fs::create_dir_all(root.join("src")).expect("Failed to create src dir");
     std::fs::write(
@@ -1501,10 +1504,12 @@ export const probe = 1;
     )
     .expect("Failed to write src/pipeline.yml");
 
-    // A test file whose annotations sit outside any code unit.
+    // A test file whose annotations sit outside any code unit. The second
+    // reference names a rule that exists, so the only thing that can flag it is
+    // test-file classification — an unknown rule would report either way.
     std::fs::write(
         root.join("src/probe.test.ts"),
-        "// r[verify ghost.verify.missing]\nexport const cases = [];\n",
+        "// r[verify ghost.verify.missing]\n// r[impl data.format]\nexport const cases = [];\n",
     )
     .expect("Failed to write src/probe.test.ts");
 
@@ -1577,7 +1582,18 @@ export const probe = 1;
         "Expected a dangling r[verify] in a test file without code units to be reported, got: {:?}",
         result.errors
     );
+    assert!(
+        has(
+            ValidationErrorCode::ImplInTestFile,
+            "probe.test.ts",
+            "test file"
+        ),
+        "Expected r[impl data.format] in a test file without code units to be reported as \
+         impl-in-test, got: {:?}",
+        result.errors
+    );
 }
+
 /// Verifies that one implementation's `test_include` patterns cannot classify
 /// another implementation's ordinary source file as a test file.
 #[tokio::test]
