@@ -1441,10 +1441,7 @@ async fn test_in_process_query_matches_daemon() {
 #[tokio::test]
 async fn test_validate_reports_references_in_files_without_code_units() {
     let temp = tempfile::tempdir().expect("Failed to create temp dir");
-    // Canonicalize: on macOS the temp dir is reached through a symlink, and
-    // test_include matching keys on the project root as given.
-    let root_buf = temp.path().canonicalize().expect("canonicalize temp dir");
-    let root = root_buf.as_path();
+    let root = temp.path();
 
     std::fs::create_dir_all(root.join("src")).expect("Failed to create src dir");
     std::fs::write(
@@ -1599,8 +1596,7 @@ export const probe = 1;
 #[tokio::test]
 async fn test_test_include_is_scoped_per_impl() {
     let temp = tempfile::tempdir().expect("Failed to create temp dir");
-    let root_buf = temp.path().canonicalize().expect("canonicalize temp dir");
-    let root = root_buf.as_path();
+    let root = temp.path();
 
     std::fs::create_dir_all(root.join("alpha")).expect("Failed to create alpha dir");
     std::fs::create_dir_all(root.join("beta")).expect("Failed to create beta dir");

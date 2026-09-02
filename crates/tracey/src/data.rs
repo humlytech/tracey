@@ -2550,8 +2550,14 @@ pub async fn build_dashboard_data_with_overlay_and_cache(
                                 if let Ok(glob) = globset::Glob::new(pattern)
                                     && glob.compile_matcher().is_match(relative)
                                 {
-                                    test_files.insert(path.to_path_buf());
-                                    impl_test_files.insert(path.to_path_buf());
+                                    // Store the canonical path: the impl scan
+                                    // resolves symlinks, so an uncanonicalized
+                                    // project root would leave these keys in a
+                                    // form no membership check can match.
+                                    let canonical =
+                                        path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+                                    test_files.insert(canonical.clone());
+                                    impl_test_files.insert(canonical);
                                     break;
                                 }
                             }
