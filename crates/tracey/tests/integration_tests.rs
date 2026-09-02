@@ -1578,3 +1578,104 @@ export const probe = 1;
         result.errors
     );
 }
+/// Verifies that one implementation's `test_include` patterns cannot classify
+/// another implementation's ordinary source file as a test file.
+#[tokio::test]
+async fn test_test_include_is_scoped_per_impl() {
+    let temp = tempfile::tempdir().expect("Failed to create temp dir");
+    let root_buf = temp.path().canonicalize().expect("canonicalize temp dir");
+    let root = root_buf.as_path();
+
+    std::fs::create_dir_all(root.join("alpha")).expect("Failed to create alpha dir");
+    std::fs::create_dir_all(root.join("beta")).expect("Failed to create beta dir");
+    std::fs::write(
+        root.join("config.styx"),
+        r#"
+specs (
+  {
+    name test
+    include (spec.md)
+    impls (
+      {
+        name alpha
+        include (alpha/**/*.ts)
+      }
+      {
+        name beta
+        include (beta/**/*.ts)
+        test_include (alpha/**/*.probe.ts)
+      }
+    )
+  }
+)
+"#,
+    )
+    .expect("Failed to write config");
+    std::fs::write(
+        root.join("spec.md"),
+        "\nr[data.format]\nEmail addresses MUST be validated.\n",
+    )
+    .expect("Failed to write spec");
+
+    // An ordinary source file for impl `alpha`. It has no code units, and it
+    // matches `beta`'s test_include glob — but beta's patterns say nothing
+    // about how alpha's files should be classified.
+    std::fs::write(
+        root.join("alpha/thing.probe.ts"),
+        "// r[impl data.format]\nexport const thing = 1;\n",
+    )
+    .expect("Failed to write alpha/thing.probe.ts");
+    std::fs::write(
+        root.join("beta/main.ts"),
+        "// r[impl data.format]\nexport const main = 2;\n",
+    )
+    .expect("Failed to write beta/main.ts");
+
+    let engine = Arc::new(
+        tracey::daemon::Engine::new(root.to_path_buf(), root.join("config.styx"))
+            .await
+            .expect("Failed to create engine"),
+    );
+    let service = tracey::daemon::TraceyService::new(engine);
+    let rpc_service = common::create_test_rpc_service(service).await;
+
+    let alpha = rpc(rpc_service
+        .client
+        .validate(ValidateRequest {
+            spec: Some("test".to_string()),
+            impl_name: Some("alpha".to_string()),
+        })
+        .await);
+
+    let beta = rpc(rpc_service
+        .client
+        .validate(ValidateRequest {
+            spec: Some("test".to_string()),
+            impl_name: Some("beta".to_string()),
+        })
+        .await);
+    let impl_in_test: Vec<_> = alpha
+        .errors
+        .iter()
+        .filter(|e| e.code == ValidationErrorCode::ImplInTestFile)
+        .collect();
+    assert!(
+        impl_in_test.is_empty(),
+        "alpha/thing.probe.ts is an ordinary source file for impl 'alpha'; only \
+         impl 'beta' declares it as a test. Got: {impl_in_test:?}"
+    );
+
+    // The same file IS a test file for beta, which declares it — the scoping
+    // must not silence the real diagnostic.
+    assert!(
+        beta.errors.iter().any(|e| {
+            e.code == ValidationErrorCode::ImplInTestFile
+                && e.file
+                    .as_deref()
+                    .is_some_and(|f| f.ends_with("thing.probe.ts"))
+        }),
+        "beta declares alpha/thing.probe.ts via test_include, so its r[impl] \
+         reference must still be reported. Got: {:?}",
+        beta.errors
+    );
+}

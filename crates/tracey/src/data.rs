@@ -1701,7 +1701,7 @@ fn compute_validation_by_impl(
     source_files_by_impl: &BTreeMap<ImplKey, BTreeSet<PathBuf>>,
     source_reqs_by_file: &BTreeMap<PathBuf, Reqs>,
     file_contents: &BTreeMap<PathBuf, String>,
-    test_files: &std::collections::HashSet<PathBuf>,
+    test_files_by_impl: &BTreeMap<ImplKey, std::collections::HashSet<PathBuf>>,
     include_parse_failures_by_impl: &BTreeMap<ImplKey, BTreeMap<PathBuf, String>>,
 ) -> BTreeMap<ImplKey, ValidationResult> {
     let mut out = BTreeMap::new();
@@ -1809,7 +1809,9 @@ fn compute_validation_by_impl(
                     .map(|p| p.to_string_lossy().to_string())
                     .unwrap_or_else(|_| compute_relative_path(abs_root, file_path));
 
-                let is_test = test_files.contains(file_path) || test_files.contains(&canonical);
+                let is_test = test_files_by_impl
+                    .get(impl_key)
+                    .is_some_and(|files| files.contains(file_path) || files.contains(&canonical));
                 let issues = collect_source_diagnostic_issues(content, reqs, is_test, &source_ctx);
                 for issue in issues {
                     let (code, related_rules) = match issue.code {
@@ -2515,6 +2517,12 @@ pub async fn build_dashboard_data_with_overlay_and_cache(
     // Collect all test file patterns and find matching files
     let test_files_start = Instant::now();
     let mut test_files: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
+    // `test_include` is configured per implementation, so a file is a test file
+    // only for the impl that declares it. The union above stays for the LSP
+    // diagnostics path, which has no impl context; validate uses the per-impl
+    // sets so one impl's patterns cannot reclassify another impl's sources.
+    let mut test_files_by_impl: BTreeMap<ImplKey, std::collections::HashSet<PathBuf>> =
+        BTreeMap::new();
     for spec_config in &config.specs {
         for impl_config in &spec_config.impls {
             let test_patterns: Vec<&str> = impl_config
@@ -2523,6 +2531,8 @@ pub async fn build_dashboard_data_with_overlay_and_cache(
                 .map(|t| t.as_str())
                 .collect();
             if !test_patterns.is_empty() {
+                let impl_key: ImplKey = (spec_config.name.clone(), impl_config.name.clone());
+                let impl_test_files = test_files_by_impl.entry(impl_key).or_default();
                 // Walk files and match against test patterns
                 let walker = ignore::WalkBuilder::new(project_root)
                     .follow_links(true)
@@ -2541,6 +2551,7 @@ pub async fn build_dashboard_data_with_overlay_and_cache(
                                     && glob.compile_matcher().is_match(relative)
                                 {
                                     test_files.insert(path.to_path_buf());
+                                    impl_test_files.insert(path.to_path_buf());
                                     break;
                                 }
                             }
@@ -2894,7 +2905,7 @@ pub async fn build_dashboard_data_with_overlay_and_cache(
         &source_files_by_impl,
         &all_source_reqs_by_file,
         &all_file_contents,
-        &test_files,
+        &test_files_by_impl,
         &include_parse_failures_by_impl,
     );
     let workspace_diagnostics = compute_workspace_diagnostics(
