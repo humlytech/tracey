@@ -1691,3 +1691,95 @@ specs (
         beta.errors
     );
 }
+
+/// An unsaved buffer that matches `test_include` but does not exist on disk is
+/// invisible to the test-file walk. It still reaches validation through the
+/// overlay, so it must be classified as a test file like any other.
+#[tokio::test]
+async fn test_test_include_classifies_unsaved_overlay_files() {
+    let temp = tempfile::tempdir().expect("Failed to create temp dir");
+    let root = temp.path();
+
+    std::fs::create_dir_all(root.join("src")).expect("Failed to create src dir");
+    std::fs::write(
+        root.join("config.styx"),
+        r#"
+specs (
+  {
+    name test
+    include (spec.md)
+    impls (
+      {
+        name rust
+        include (src/**/*.ts)
+        test_include (src/**/*.test.ts)
+      }
+    )
+  }
+)
+"#,
+    )
+    .expect("Failed to write config");
+    std::fs::write(
+        root.join("spec.md"),
+        "\nr[data.format]\nEmail addresses MUST be validated.\n",
+    )
+    .expect("Failed to write spec");
+    std::fs::write(
+        root.join("src/main.ts"),
+        "// r[impl data.format]\nexport const main = 1;\n",
+    )
+    .expect("Failed to write src/main.ts");
+
+    let engine = Arc::new(
+        tracey::daemon::Engine::new(root.to_path_buf(), root.join("config.styx"))
+            .await
+            .expect("Failed to create engine"),
+    );
+    let service = tracey::daemon::TraceyService::new(engine);
+    let rpc_service = common::create_test_rpc_service(service).await;
+
+    // Never written to disk — it exists only as an editor buffer.
+    let unsaved = root.join("src/draft.test.ts");
+    assert!(
+        !unsaved.exists(),
+        "fixture must not create the file on disk"
+    );
+    rpc(rpc_service
+        .client
+        .vfs_open(
+            unsaved.display().to_string(),
+            "// r[impl data.format]\nexport const cases = [];\n".to_string(),
+        )
+        .await);
+    rpc(rpc_service.client.reload().await);
+
+    let result = rpc(rpc_service
+        .client
+        .validate(ValidateRequest {
+            spec: Some("test".to_string()),
+            impl_name: Some("rust".to_string()),
+        })
+        .await);
+
+    assert!(
+        result.errors.iter().any(|e| {
+            e.code == ValidationErrorCode::ImplInTestFile
+                && e.file
+                    .as_deref()
+                    .is_some_and(|f| f.ends_with("draft.test.ts"))
+        }),
+        "an unsaved buffer matching test_include must be classified as a test file, got: {:?}",
+        result.errors
+    );
+
+    // The saved non-test file keeps its ordinary classification.
+    assert!(
+        !result.errors.iter().any(|e| {
+            e.code == ValidationErrorCode::ImplInTestFile
+                && e.file.as_deref().is_some_and(|f| f.ends_with("main.ts"))
+        }),
+        "src/main.ts is not a test file, got: {:?}",
+        result.errors
+    );
+}

@@ -795,6 +795,27 @@ fn path_matches_any_root(path: &Path, roots: &[ScanRootPattern]) -> bool {
     roots.iter().any(|r| path_matches_root_pattern(path, r))
 }
 
+/// Match a project-relative path against a set of `test_include` globs.
+fn matches_any_glob(relative: &Path, patterns: &[&str]) -> bool {
+    patterns.iter().any(|pattern| {
+        globset::Glob::new(pattern)
+            .map(|g| g.compile_matcher().is_match(relative))
+            .unwrap_or(false)
+    })
+}
+
+/// Express `path` relative to the project root, accepting either the root as
+/// configured or its canonical form — an overlay path may arrive as either.
+fn project_relative<'a>(
+    path: &'a Path,
+    project_root: &Path,
+    canonical_root: &Path,
+) -> Option<&'a Path> {
+    path.strip_prefix(project_root)
+        .or_else(|_| path.strip_prefix(canonical_root))
+        .ok()
+}
+
 fn path_matches_excludes(path: &Path, roots: &[ScanRootPattern], exclude: &[String]) -> bool {
     roots.iter().any(|r| {
         let Ok(relative) = path.strip_prefix(&r.root) else {
@@ -2523,6 +2544,9 @@ pub async fn build_dashboard_data_with_overlay_and_cache(
     // sets so one impl's patterns cannot reclassify another impl's sources.
     let mut test_files_by_impl: BTreeMap<ImplKey, std::collections::HashSet<PathBuf>> =
         BTreeMap::new();
+    let canonical_project_root = project_root
+        .canonicalize()
+        .unwrap_or_else(|_| project_root.to_path_buf());
     for spec_config in &config.specs {
         for impl_config in &spec_config.impls {
             let test_patterns: Vec<&str> = impl_config
@@ -2533,6 +2557,14 @@ pub async fn build_dashboard_data_with_overlay_and_cache(
             if !test_patterns.is_empty() {
                 let impl_key: ImplKey = (spec_config.name.clone(), impl_config.name.clone());
                 let impl_test_files = test_files_by_impl.entry(impl_key).or_default();
+                // Store the canonical path: the impl scan resolves symlinks, so
+                // an uncanonicalized project root would leave these keys in a
+                // form no membership check can match.
+                let mut record = |path: &Path| {
+                    let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+                    test_files.insert(canonical.clone());
+                    impl_test_files.insert(canonical);
+                };
                 // Walk files and match against test patterns
                 let walker = ignore::WalkBuilder::new(project_root)
                     .follow_links(true)
@@ -2545,23 +2577,23 @@ pub async fn build_dashboard_data_with_overlay_and_cache(
                     };
                     if ft.is_file() {
                         let path = entry.path();
-                        if let Ok(relative) = path.strip_prefix(project_root) {
-                            for pattern in &test_patterns {
-                                if let Ok(glob) = globset::Glob::new(pattern)
-                                    && glob.compile_matcher().is_match(relative)
-                                {
-                                    // Store the canonical path: the impl scan
-                                    // resolves symlinks, so an uncanonicalized
-                                    // project root would leave these keys in a
-                                    // form no membership check can match.
-                                    let canonical =
-                                        path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
-                                    test_files.insert(canonical.clone());
-                                    impl_test_files.insert(canonical);
-                                    break;
-                                }
-                            }
+                        if let Some(relative) =
+                            project_relative(path, project_root, &canonical_project_root)
+                            && matches_any_glob(relative, &test_patterns)
+                        {
+                            record(path);
                         }
+                    }
+                }
+                // The impl scan also feeds unsaved overlay buffers into the
+                // source set. One that does not exist on disk yet is invisible
+                // to the walk above, so match it here or it is never classified.
+                for overlay_path in overlay.keys() {
+                    if let Some(relative) =
+                        project_relative(overlay_path, project_root, &canonical_project_root)
+                        && matches_any_glob(relative, &test_patterns)
+                    {
+                        record(overlay_path);
                     }
                 }
             }
