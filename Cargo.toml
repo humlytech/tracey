@@ -7,7 +7,7 @@ resolver = "3"
 ignored = ["facet-error"]
 
 [workspace.package]
-version = "1.5.0-humly.3"
+version = "1.5.0-humly.4"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/humlytech/tracey"
@@ -15,10 +15,10 @@ authors = ["Amos Wenger <amos@bearcove.eu>"]
 
 [workspace.dependencies]
 # Internal
-tracey-core = { path = "crates/tracey-core", version = "1.5.0-humly.3", default-features = false }
-tracey-api = { path = "crates/tracey-api", version = "1.5.0-humly.3" }
-tracey-proto = { path = "crates/tracey-proto", version = "1.5.0-humly.3" }
-tracey-config = { path = "crates/tracey-config", version = "1.5.0-humly.3" }
+tracey-core = { path = "crates/tracey-core", version = "1.5.0-humly.4", default-features = false }
+tracey-api = { path = "crates/tracey-api", version = "1.5.0-humly.4" }
+tracey-proto = { path = "crates/tracey-proto", version = "1.5.0-humly.4" }
+tracey-config = { path = "crates/tracey-config", version = "1.5.0-humly.4" }
 
 # Facet ecosystem
 facet = { version = "0.44" }
