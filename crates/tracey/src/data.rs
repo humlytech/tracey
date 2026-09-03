@@ -795,6 +795,27 @@ fn path_matches_any_root(path: &Path, roots: &[ScanRootPattern]) -> bool {
     roots.iter().any(|r| path_matches_root_pattern(path, r))
 }
 
+/// Match a project-relative path against a set of `test_include` globs.
+fn matches_any_glob(relative: &Path, patterns: &[&str]) -> bool {
+    patterns.iter().any(|pattern| {
+        globset::Glob::new(pattern)
+            .map(|g| g.compile_matcher().is_match(relative))
+            .unwrap_or(false)
+    })
+}
+
+/// Express `path` relative to the project root, accepting either the root as
+/// configured or its canonical form — an overlay path may arrive as either.
+fn project_relative<'a>(
+    path: &'a Path,
+    project_root: &Path,
+    canonical_root: &Path,
+) -> Option<&'a Path> {
+    path.strip_prefix(project_root)
+        .or_else(|_| path.strip_prefix(canonical_root))
+        .ok()
+}
+
 fn path_matches_excludes(path: &Path, roots: &[ScanRootPattern], exclude: &[String]) -> bool {
     roots.iter().any(|r| {
         let Ok(relative) = path.strip_prefix(&r.root) else {
@@ -1698,10 +1719,10 @@ fn compute_validation_by_impl(
     config_path: &Path,
     config: &ApiConfig,
     forward_by_impl: &BTreeMap<ImplKey, ApiSpecForward>,
-    reverse_by_impl: &BTreeMap<ImplKey, ApiReverseData>,
+    source_files_by_impl: &BTreeMap<ImplKey, BTreeSet<PathBuf>>,
     source_reqs_by_file: &BTreeMap<PathBuf, Reqs>,
     file_contents: &BTreeMap<PathBuf, String>,
-    test_files: &std::collections::HashSet<PathBuf>,
+    test_files_by_impl: &BTreeMap<ImplKey, std::collections::HashSet<PathBuf>>,
     include_parse_failures_by_impl: &BTreeMap<ImplKey, BTreeMap<PathBuf, String>>,
 ) -> BTreeMap<ImplKey, ValidationResult> {
     let mut out = BTreeMap::new();
@@ -1782,26 +1803,36 @@ fn compute_validation_by_impl(
             }
         }
 
-        if let Some(reverse_data) = reverse_by_impl.get(impl_key) {
-            for file_entry in &reverse_data.files {
-                let file_path = abs_root.join(&file_entry.path);
+        // Walk every file whose references were parsed for this impl, not only the
+        // ones that yielded a code unit — a file made solely of top-level statements
+        // (or a .yml/.json5 file, which can never yield one) still carries references
+        // that must be validated.
+        if let Some(source_files) = source_files_by_impl.get(impl_key) {
+            for file_path in source_files {
                 let canonical = file_path
                     .canonicalize()
                     .unwrap_or_else(|_| file_path.clone());
                 let Some(reqs) = source_reqs_by_file
-                    .get(&canonical)
-                    .or_else(|| source_reqs_by_file.get(&file_path))
+                    .get(file_path)
+                    .or_else(|| source_reqs_by_file.get(&canonical))
                 else {
                     continue;
                 };
                 let content = file_contents
-                    .get(&canonical)
-                    .or_else(|| file_contents.get(&file_path));
+                    .get(file_path)
+                    .or_else(|| file_contents.get(&canonical));
                 let Some(content) = content else {
                     continue;
                 };
 
-                let is_test = test_files.contains(&file_path) || test_files.contains(&canonical);
+                let relative_display = file_path
+                    .strip_prefix(abs_root)
+                    .map(|p| p.to_string_lossy().to_string())
+                    .unwrap_or_else(|_| compute_relative_path(abs_root, file_path));
+
+                let is_test = test_files_by_impl
+                    .get(impl_key)
+                    .is_some_and(|files| files.contains(file_path) || files.contains(&canonical));
                 let issues = collect_source_diagnostic_issues(content, reqs, is_test, &source_ctx);
                 for issue in issues {
                     let (code, related_rules) = match issue.code {
@@ -1826,7 +1857,7 @@ fn compute_validation_by_impl(
                     errors.push(ValidationError {
                         code,
                         message: issue.message,
-                        file: Some(file_entry.path.clone()),
+                        file: Some(relative_display.clone()),
                         line: Some(issue.line),
                         column: Some(issue.start_char as usize + 1),
                         related_rules,
@@ -2484,6 +2515,7 @@ pub async fn build_dashboard_data_with_overlay_and_cache(
     let mut all_file_contents: BTreeMap<PathBuf, String> = BTreeMap::new();
     let mut all_spec_file_contents: BTreeMap<PathBuf, String> = BTreeMap::new();
     let mut all_source_reqs_by_file: BTreeMap<PathBuf, Reqs> = BTreeMap::new();
+    let mut source_files_by_impl: BTreeMap<ImplKey, BTreeSet<PathBuf>> = BTreeMap::new();
     let mut all_search_rules: Vec<search::RuleEntry> = Vec::new();
     let mut total_extracted_rules = 0usize;
     let mut total_source_refs = 0usize;
@@ -2506,6 +2538,15 @@ pub async fn build_dashboard_data_with_overlay_and_cache(
     // Collect all test file patterns and find matching files
     let test_files_start = Instant::now();
     let mut test_files: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
+    // `test_include` is configured per implementation, so a file is a test file
+    // only for the impl that declares it. The union above stays for the LSP
+    // diagnostics path, which has no impl context; validate uses the per-impl
+    // sets so one impl's patterns cannot reclassify another impl's sources.
+    let mut test_files_by_impl: BTreeMap<ImplKey, std::collections::HashSet<PathBuf>> =
+        BTreeMap::new();
+    let canonical_project_root = project_root
+        .canonicalize()
+        .unwrap_or_else(|_| project_root.to_path_buf());
     for spec_config in &config.specs {
         for impl_config in &spec_config.impls {
             let test_patterns: Vec<&str> = impl_config
@@ -2514,6 +2555,16 @@ pub async fn build_dashboard_data_with_overlay_and_cache(
                 .map(|t| t.as_str())
                 .collect();
             if !test_patterns.is_empty() {
+                let impl_key: ImplKey = (spec_config.name.clone(), impl_config.name.clone());
+                let impl_test_files = test_files_by_impl.entry(impl_key).or_default();
+                // Store the canonical path: the impl scan resolves symlinks, so
+                // an uncanonicalized project root would leave these keys in a
+                // form no membership check can match.
+                let mut record = |path: &Path| {
+                    let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+                    test_files.insert(canonical.clone());
+                    impl_test_files.insert(canonical);
+                };
                 // Walk files and match against test patterns
                 let walker = ignore::WalkBuilder::new(project_root)
                     .follow_links(true)
@@ -2526,16 +2577,23 @@ pub async fn build_dashboard_data_with_overlay_and_cache(
                     };
                     if ft.is_file() {
                         let path = entry.path();
-                        if let Ok(relative) = path.strip_prefix(project_root) {
-                            for pattern in &test_patterns {
-                                if let Ok(glob) = globset::Glob::new(pattern)
-                                    && glob.compile_matcher().is_match(relative)
-                                {
-                                    test_files.insert(path.to_path_buf());
-                                    break;
-                                }
-                            }
+                        if let Some(relative) =
+                            project_relative(path, project_root, &canonical_project_root)
+                            && matches_any_glob(relative, &test_patterns)
+                        {
+                            record(path);
                         }
+                    }
+                }
+                // The impl scan also feeds unsaved overlay buffers into the
+                // source set. One that does not exist on disk yet is invisible
+                // to the walk above, so match it here or it is never classified.
+                for overlay_path in overlay.keys() {
+                    if let Some(relative) =
+                        project_relative(overlay_path, project_root, &canonical_project_root)
+                        && matches_any_glob(relative, &test_patterns)
+                    {
+                        record(overlay_path);
                     }
                 }
             }
@@ -2763,7 +2821,9 @@ pub async fn build_dashboard_data_with_overlay_and_cache(
             for (path, content) in impl_file_contents {
                 all_file_contents.insert(path, content);
             }
+            let impl_source_files = source_files_by_impl.entry(impl_key.clone()).or_default();
             for (path, reqs) in impl_source_reqs_by_file {
+                impl_source_files.insert(path.clone());
                 all_source_reqs_by_file.entry(path).or_insert(reqs);
             }
             if !parse_warnings.is_empty() {
@@ -2880,10 +2940,10 @@ pub async fn build_dashboard_data_with_overlay_and_cache(
         config_path,
         &api_config,
         &forward_by_impl,
-        &reverse_by_impl,
+        &source_files_by_impl,
         &all_source_reqs_by_file,
         &all_file_contents,
-        &test_files,
+        &test_files_by_impl,
         &include_parse_failures_by_impl,
     );
     let workspace_diagnostics = compute_workspace_diagnostics(
