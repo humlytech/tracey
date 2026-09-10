@@ -440,10 +440,7 @@ impl Backend {
                 if !ft.is_file() {
                     continue;
                 }
-                if path
-                    .extension()
-                    .is_none_or(|ext| !tracey_core::is_supported_extension(ext))
-                {
+                if !tracey_core::is_supported_path(path) {
                     continue;
                 }
                 let Ok(content) = std::fs::read_to_string(path) else {
@@ -732,11 +729,10 @@ impl Backend {
             if !ft.is_file() {
                 continue;
             }
-            let should_clear = path.extension().is_some_and(|ext| {
-                tracey_core::is_spec_extension(ext)
-                    || ext == "styx"
-                    || tracey_core::is_supported_extension(ext)
-            });
+            let should_clear = tracey_core::is_supported_path(path)
+                || path
+                    .extension()
+                    .is_some_and(|ext| tracey_core::is_spec_extension(ext) || ext == "styx");
             if !should_clear {
                 continue;
             }

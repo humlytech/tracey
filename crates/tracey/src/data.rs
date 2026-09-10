@@ -22,7 +22,7 @@ use tracey_core::{
     ParseWarning, RefVerb, ReqDefinition, ReqReference, Reqs, RuleId, RuleIdMatch,
     classify_reference_for_rule, parse_rule_id,
 };
-use tracey_core::{SUPPORTED_EXTENSIONS, is_supported_extension};
+use tracey_core::{is_supported_path, supported_file_types_display};
 use tracing::info;
 
 // Markdown rendering
@@ -858,11 +858,7 @@ fn full_walk_for_roots(
             {
                 continue;
             }
-            if include_supported_ext_only
-                && path
-                    .extension()
-                    .is_none_or(|ext| !is_supported_extension(ext))
-            {
+            if include_supported_ext_only && !is_supported_path(path) {
                 continue;
             }
             if !path_matches_root_pattern(path, root_pattern) {
@@ -893,7 +889,7 @@ fn update_cached_scan_paths(
                 .extension()
                 .is_some_and(tracey_core::is_spec_extension)
         } else if include_supported_ext_only {
-            changed.extension().is_some_and(is_supported_extension)
+            is_supported_path(changed)
         } else {
             true
         };
@@ -1266,19 +1262,13 @@ async fn scan_impl_files(
     let mut file_contents: BTreeMap<PathBuf, String> = BTreeMap::new();
     let mut reqs_by_file: BTreeMap<PathBuf, Reqs> = BTreeMap::new();
     for path in files {
-        match path.extension() {
-            Some(ext) if is_supported_extension(ext) => {}
-            Some(ext) => {
-                parse_failures.push((
-                    path.clone(),
-                    format!("unsupported file extension '.{}'", ext.to_string_lossy()),
-                ));
-                continue;
-            }
-            None => {
-                parse_failures.push((path.clone(), "file has no extension".to_string()));
-                continue;
-            }
+        if !is_supported_path(&path) {
+            let reason = match path.extension() {
+                Some(ext) => format!("unsupported file extension '.{}'", ext.to_string_lossy()),
+                None => "file has no extension".to_string(),
+            };
+            parse_failures.push((path.clone(), reason));
+            continue;
         }
 
         match get_cached_source_file(&path, overlay, cache, stats).await {
@@ -1873,11 +1863,7 @@ fn compute_validation_by_impl(
                 .strip_prefix(abs_root)
                 .map(|p| p.to_string_lossy().to_string())
                 .unwrap_or_else(|_| compute_relative_path(abs_root, config_path));
-            let supported_file_types = SUPPORTED_EXTENSIONS
-                .iter()
-                .map(|ext| format!(".{ext}"))
-                .collect::<Vec<_>>()
-                .join(", ");
+            let supported_file_types = supported_file_types_display();
 
             for (path, reason) in parse_failures {
                 let rel_path = path
@@ -2005,11 +1991,7 @@ async fn compute_workspace_diagnostics(
             .strip_prefix(abs_root)
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_else(|_| compute_relative_path(abs_root, config_path));
-        let supported_file_types = SUPPORTED_EXTENSIONS
-            .iter()
-            .map(|ext| format!(".{ext}"))
-            .collect::<Vec<_>>()
-            .join(", ");
+        let supported_file_types = supported_file_types_display();
 
         let diagnostics = include_parse_failures
             .iter()
