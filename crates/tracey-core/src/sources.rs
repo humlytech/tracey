@@ -848,6 +848,48 @@ mod tests {
         );
     }
 
+    /// The walker's file-type gate used to read the extension only, which
+    /// dropped `Dockerfile` and `.dockerignore` before they could be scanned.
+    #[cfg(feature = "walk")]
+    #[test]
+    fn test_walk_sources_scans_terraform_and_docker_files() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let root = temp.path();
+
+        std::fs::write(root.join("main.tf"), "# r[impl infra.bucket]\n").unwrap();
+        std::fs::write(root.join("prod.tfvars"), "# r[impl infra.region]\n").unwrap();
+        std::fs::write(
+            root.join("Dockerfile"),
+            "# r[impl deploy.image]\nFROM scratch\n",
+        )
+        .unwrap();
+        std::fs::write(root.join("Dockerfile.dev"), "# r[impl deploy.dev-image]\n").unwrap();
+        std::fs::write(root.join(".dockerignore"), "# r[impl deploy.context]\n").unwrap();
+        // Not a file type tracey scans, so its annotation must stay invisible.
+        std::fs::write(root.join("Makefile"), "# r[impl should.not.appear]\n").unwrap();
+
+        let result = Reqs::extract(WalkSources::new(root)).unwrap();
+
+        let mut found: Vec<String> = result
+            .reqs
+            .references
+            .iter()
+            .map(|r| r.req_id.to_string())
+            .collect();
+        found.sort_unstable();
+
+        assert_eq!(
+            found,
+            vec![
+                "deploy.context",
+                "deploy.dev-image",
+                "deploy.image",
+                "infra.bucket",
+                "infra.region",
+            ]
+        );
+    }
+
     #[cfg(feature = "walk")]
     mod glob_tests {
         fn matches(path: &str, pattern: &str) -> bool {

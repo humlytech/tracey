@@ -278,15 +278,84 @@ fn check_ignore_directives(text: &str, line: LineNumber, state: &mut IgnoreState
     true
 }
 
-/// Find the byte position where a YAML line comment starts.
+/// Which comment syntaxes the text-based scanner should look for in a file.
+///
+/// Most languages tracey scans use `//` line comments and `/* */` blocks, so
+/// that is the default. Languages that comment with `#` need the opposite
+/// treatment: scanning `//` in a Dockerfile would turn any URL into a comment.
+#[cfg(not(feature = "reverse"))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct CommentSyntax {
+    /// Where on a line a `#` opens a comment
+    hash: HashRule,
+    /// `//` line comments (and doc-comment variants such as `///`)
+    slashes: bool,
+    /// `/* */` block comments
+    block: bool,
+}
+
+/// Where a `#` has to sit before it opens a comment.
+#[cfg(not(feature = "reverse"))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HashRule {
+    /// `#` never opens a comment
+    Never,
+    /// Anywhere a `#` follows whitespace and sits outside a quoted string, as
+    /// in YAML and HCL, where a trailing comment may follow a value
+    AfterWhitespace,
+    /// Only as the first non-blank character of a line, which is all that
+    /// Docker accepts: `RUN curl x # y` passes the `#` to the shell
+    LineStart,
+}
+
+#[cfg(not(feature = "reverse"))]
+impl CommentSyntax {
+    /// `//` and `/* */`, the shape shared by most languages tracey scans.
+    const C_STYLE: Self = Self {
+        hash: HashRule::Never,
+        slashes: true,
+        block: true,
+    };
+    /// `#` anywhere on a line, as in YAML.
+    const HASH_ONLY: Self = Self {
+        hash: HashRule::AfterWhitespace,
+        slashes: false,
+        block: false,
+    };
+    /// `#` at the start of a line only, as in the Docker file formats.
+    const DOCKER: Self = Self {
+        hash: HashRule::LineStart,
+        slashes: false,
+        block: false,
+    };
+    /// `#`, `//` and `/* */`, all three of which HCL accepts.
+    const HCL: Self = Self {
+        hash: HashRule::AfterWhitespace,
+        slashes: true,
+        block: true,
+    };
+
+    /// Pick the comment syntaxes to scan for based on the file's language.
+    fn for_path(path: &Path) -> Self {
+        match crate::sources::source_language_key(path) {
+            Some("yml" | "yaml") => Self::HASH_ONLY,
+            Some("dockerfile" | "dockerignore") => Self::DOCKER,
+            Some("tf" | "tfvars") => Self::HCL,
+            _ => Self::C_STYLE,
+        }
+    }
+}
+
+/// Find the byte position where a `#` line comment starts.
 ///
 /// Per the YAML spec a `#` opens a comment only when it is at the start of the
 /// line (possibly after leading whitespace) or is immediately preceded by at
 /// least one whitespace character, AND is not inside a single- or double-quoted
 /// scalar.  A bare `#` embedded in a plain scalar — e.g. `url: http://x/#frag`
-/// — is NOT a comment.
+/// — is NOT a comment. HCL and the Docker file formats quote and comment
+/// closely enough for the same rule to hold.
 #[cfg(not(feature = "reverse"))]
-fn find_yaml_comment_start(line: &str) -> Option<usize> {
+fn find_hash_comment_start(line: &str) -> Option<usize> {
     let mut in_single = false;
     let mut in_double = false;
     let mut prev: Option<char> = None;
@@ -318,56 +387,53 @@ fn extract_from_content_text_based(path: &Path, content: &str, reqs: &mut Reqs) 
 
     let mut ignore_state = IgnoreState::default();
 
-    let is_yaml = path
-        .extension()
-        .and_then(|e| e.to_str())
-        .is_some_and(|e| matches!(e, "yml" | "yaml"));
+    let syntax = CommentSyntax::for_path(path);
 
     // Scan for comments and extract references
     for (line_idx, line) in content.lines().enumerate() {
         let line_num = LineNumber::from_zero_based(line_idx);
         let line_start = line_starts.line_start_for_index(line_idx);
 
-        if is_yaml {
-            // YAML uses # as its only comment syntax; skip // and /* */ scanning
-            // entirely to avoid false positives (e.g. URLs containing //).
-            if let Some(comment_pos) = find_yaml_comment_start(line) {
-                let comment = &line[comment_pos..];
-                let comment_start = line_start.add(comment_pos);
-
-                if check_ignore_directives(comment, line_num, &mut ignore_state) {
-                    extract_references_from_text(
-                        path,
-                        comment,
-                        comment_start,
-                        line_num,
-                        &file_code_mask,
-                        reqs,
-                    );
-                }
+        // Whichever comment opener comes first on the line wins, so that a `#`
+        // inside a `//` comment (or the reverse) is not scanned twice.
+        let hash_pos = match syntax.hash {
+            HashRule::Never => None,
+            HashRule::AfterWhitespace => find_hash_comment_start(line),
+            HashRule::LineStart => {
+                let indent = line.len() - line.trim_start().len();
+                line.trim_start().starts_with('#').then_some(indent)
             }
+        };
+        let slashes_pos = if syntax.slashes {
+            line.find("//")
         } else {
-            // Check for line comments (// or ///)
-            if let Some(comment_pos) = line.find("//") {
-                let comment = &line[comment_pos..];
-                let comment_start = line_start.add(comment_pos);
+            None
+        };
+        let comment_pos = match (hash_pos, slashes_pos) {
+            (Some(h), Some(s)) => Some(h.min(s)),
+            (Some(h), None) => Some(h),
+            (None, s) => s,
+        };
 
-                if check_ignore_directives(comment, line_num, &mut ignore_state) {
-                    extract_references_from_text(
-                        path,
-                        comment,
-                        comment_start,
-                        line_num,
-                        &file_code_mask,
-                        reqs,
-                    );
-                }
+        if let Some(comment_pos) = comment_pos {
+            let comment = &line[comment_pos..];
+            let comment_start = line_start.add(comment_pos);
+
+            if check_ignore_directives(comment, line_num, &mut ignore_state) {
+                extract_references_from_text(
+                    path,
+                    comment,
+                    comment_start,
+                    line_num,
+                    &file_code_mask,
+                    reqs,
+                );
             }
         }
     }
 
-    // Handle block comments /* */ — not applicable to YAML.
-    if !is_yaml {
+    // Handle block comments /* */ — only for languages that have them.
+    if syntax.block {
         let mut in_block_comment = false;
         let mut block_start = 0;
         let mut block_line = LineNumber::from_one_based(1);
@@ -1190,5 +1256,110 @@ pub fn reconnect() {}
         let content = "msg: \"hello # r[impl yaml.false-positive]\"\n";
         let reqs = Reqs::extract_from_content(Path::new("config.yaml"), content);
         assert_eq!(reqs.len(), 0, "# inside a double-quoted scalar must not be a comment");
+    }
+
+    #[test]
+    fn test_terraform_accepts_all_three_comment_styles() {
+        // HCL accepts #, // and /* */, so all three must be scanned in .tf files.
+        let content = concat!(
+            "# r[impl infra.bucket.name]\n",
+            "// r[verify infra.bucket.name]\n",
+            "/* r[depends infra.bucket.encryption] */\n",
+            "resource \"aws_s3_bucket\" \"logs\" {\n",
+            "  bucket = \"my-logs\" # r[related infra.bucket.tags]\n",
+            "}\n",
+        );
+        let reqs = Reqs::extract_from_content(Path::new("main.tf"), content);
+        // Sorted, because the tree-sitter and text-based scanners visit block
+        // comments at different points in the file.
+        let mut found: Vec<String> = reqs
+            .references
+            .iter()
+            .map(|r| r.req_id.to_string())
+            .collect();
+        found.sort_unstable();
+        assert_eq!(
+            found,
+            vec![
+                "infra.bucket.encryption",
+                "infra.bucket.name",
+                "infra.bucket.name",
+                "infra.bucket.tags",
+            ],
+            "every HCL comment style should yield a reference"
+        );
+    }
+
+    #[test]
+    fn test_terraform_tfvars_scanned() {
+        let content = "# r[impl infra.region.default]\nregion = \"eu-north-1\"\n";
+        let reqs = Reqs::extract_from_content(Path::new("prod.tfvars"), content);
+        assert_eq!(reqs.len(), 1);
+        assert_eq!(reqs.references[0].req_id, "infra.region.default");
+    }
+
+    #[test]
+    fn test_dockerfile_hash_comments_scanned() {
+        let content = concat!(
+            "# r[impl deploy.base-image]\n",
+            "FROM alpine:3.20\n",
+            "  # r[verify deploy.base-image]\n",
+            "RUN apk add --no-cache curl\n",
+        );
+        let reqs = Reqs::extract_from_content(Path::new("Dockerfile"), content);
+        let found: Vec<String> = reqs
+            .references
+            .iter()
+            .map(|r| r.req_id.to_string())
+            .collect();
+        assert_eq!(found, vec!["deploy.base-image", "deploy.base-image"]);
+    }
+
+    #[test]
+    fn test_dockerfile_trailing_hash_is_not_a_comment() {
+        // Docker only strips a `#` that begins a line. Anywhere else it is part
+        // of the instruction, so an annotation there is not a real reference.
+        let content = "RUN apk add curl # r[impl should.not.parse]\n";
+        let reqs = Reqs::extract_from_content(Path::new("Dockerfile"), content);
+        assert_eq!(
+            reqs.len(),
+            0,
+            "a trailing # belongs to the instruction, not to Docker"
+        );
+    }
+
+    #[test]
+    fn test_dockerfile_suffixed_variant_scanned() {
+        let content = "# r[impl deploy.dev-image]\nFROM node:22\n";
+        let reqs = Reqs::extract_from_content(Path::new("Dockerfile.dev"), content);
+        assert_eq!(reqs.len(), 1);
+        assert_eq!(reqs.references[0].req_id, "deploy.dev-image");
+    }
+
+    #[test]
+    fn test_dockerfile_slashes_are_not_comments() {
+        // A Dockerfile has no // comment syntax, so a URL in a RUN instruction
+        // must not be mistaken for one.
+        let content = "RUN curl https://example.com/r[impl should.not.parse]\n";
+        let reqs = Reqs::extract_from_content(Path::new("Dockerfile"), content);
+        assert_eq!(reqs.len(), 0, "// in a Dockerfile is not a comment");
+    }
+
+    #[test]
+    fn test_dockerignore_hash_comments_scanned() {
+        let content = concat!(
+            "# r[impl build.context.slim]\n",
+            "node_modules\n",
+            "**/*.log\n",
+            "# r[verify build.context.slim]\n",
+            "target/\n",
+        );
+        let reqs = Reqs::extract_from_content(Path::new(".dockerignore"), content);
+        let found: Vec<String> = reqs
+            .references
+            .iter()
+            .map(|r| r.req_id.to_string())
+            .collect();
+        assert_eq!(found, vec!["build.context.slim", "build.context.slim"]);
     }
 }
