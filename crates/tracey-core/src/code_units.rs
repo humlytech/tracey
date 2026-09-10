@@ -1518,9 +1518,12 @@ pub fn extract_refs(path: &Path, source: &str) -> Vec<FullReqRef> {
 
 /// Extract all requirement references and malformed-reference warnings.
 pub fn extract_refs_with_warnings(path: &Path, source: &str) -> ExtractedRefs {
-    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+    // Not always the literal extension: Docker files are identified by name.
+    let Some(key) = crate::sources::source_language_key(path) else {
+        return ExtractedRefs::default();
+    };
 
-    let language = match ext {
+    let language = match key {
         "rs" => arborium_rust::language(),
         "swift" => arborium_swift::language(),
         "go" => arborium_go::language(),
@@ -1556,6 +1559,12 @@ pub fn extract_refs_with_warnings(path: &Path, source: &str) -> ExtractedRefs {
         "nix" => arborium_nix::language(),
         "svelte" => arborium_svelte::language(),
         "yml" | "yaml" => arborium_yaml::language(),
+        // Terraform is written in HCL, which comments with #, // and /* */.
+        "tf" | "tfvars" => arborium_hcl::language(),
+        // A .dockerignore is not valid Dockerfile syntax, but it shares the #
+        // comment token, and tree-sitter keeps comment nodes inside the error
+        // subtree it builds for the unrecognised lines.
+        "dockerfile" | "dockerignore" => arborium_dockerfile::language(),
         _ => return ExtractedRefs::default(),
     };
 
