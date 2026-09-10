@@ -1,0 +1,21 @@
+// Terraform and Docker annotation sources. Docker files are matched by name
+// rather than by extension, which the include patterns have to allow for.
+specs (
+  {
+    name test
+    include (spec.md)
+    impls (
+      {
+        name infra
+        include (
+          *.tf
+          *.tfvars
+          Dockerfile
+          Dockerfile.*
+          .dockerignore
+        )
+        test_include ()
+      }
+    )
+  }
+)
