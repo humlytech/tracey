@@ -689,14 +689,20 @@ struct ScanRootPattern {
 /// so that the walker can start from a narrowed root instead of scanning
 /// the entire project tree.
 fn split_glob_prefix(pattern: &str) -> (&str, &str) {
-    if let Some(wildcard_pos) = pattern.find("**").or_else(|| pattern.find('*')) {
-        let base = pattern[..wildcard_pos].trim_end_matches('/');
-        let suffix = &pattern[wildcard_pos..];
-        (base, suffix)
-    } else {
+    let Some(wildcard_pos) = pattern.find("**").or_else(|| pattern.find('*')) else {
         // No wildcards — exact path
-        (pattern, "")
-    }
+        return (pattern, "");
+    };
+    // A wildcard may sit part-way into a path segment, as in `Dockerfile.*`.
+    // Only whole leading segments name a directory to walk from, so cut back to
+    // the last separator rather than to the wildcard itself.
+    let split_at = pattern[..wildcard_pos]
+        .rfind('/')
+        .map_or(0, |slash| slash + 1);
+    (
+        pattern[..split_at].trim_end_matches('/'),
+        &pattern[split_at..],
+    )
 }
 
 fn build_scan_roots(
@@ -3245,4 +3251,32 @@ fn build_outline(
     }
 
     entries
+}
+
+#[cfg(test)]
+mod scan_root_tests {
+    use super::split_glob_prefix;
+
+    /// The base has to be a real directory prefix. A wildcard part-way into a
+    /// segment, as in `Dockerfile.*`, used to yield the non-existent base
+    /// `Dockerfile.`, and the pattern was then dropped as a missing path.
+    #[test]
+    fn test_split_glob_prefix_keeps_whole_segments() {
+        assert_eq!(split_glob_prefix("Dockerfile.*"), ("", "Dockerfile.*"));
+        assert_eq!(
+            split_glob_prefix("infra/Dockerfile.*"),
+            ("infra", "Dockerfile.*")
+        );
+        assert_eq!(split_glob_prefix("src/test_*.rs"), ("src", "test_*.rs"));
+    }
+
+    #[test]
+    fn test_split_glob_prefix_segment_aligned_patterns_unchanged() {
+        assert_eq!(split_glob_prefix("*.tf"), ("", "*.tf"));
+        assert_eq!(split_glob_prefix("src/**/*.rs"), ("src", "**/*.rs"));
+        assert_eq!(split_glob_prefix("crates/**/*.rs"), ("crates", "**/*.rs"));
+        assert_eq!(split_glob_prefix("../marq/**/*.rs"), ("../marq", "**/*.rs"));
+        assert_eq!(split_glob_prefix("spec.md"), ("spec.md", ""));
+        assert_eq!(split_glob_prefix("Dockerfile"), ("Dockerfile", ""));
+    }
 }

@@ -454,14 +454,17 @@ fn is_excluded(path: &Path, root: &Path, patterns: &[String]) -> bool {
 #[cfg(feature = "walk")]
 fn extract_cross_workspace_base(pattern: &str) -> String {
     // Find the first occurrence of "**" or "*"
-    if let Some(wildcard_pos) = pattern.find("**").or_else(|| pattern.find('*')) {
-        // Get everything before the wildcard, then trim trailing slash
-        let base = &pattern[..wildcard_pos];
-        base.trim_end_matches('/').to_string()
-    } else {
+    let Some(wildcard_pos) = pattern.find("**").or_else(|| pattern.find('*')) else {
         // No wildcards, use the pattern as-is
-        pattern.to_string()
-    }
+        return pattern.to_string();
+    };
+    // A wildcard may sit part-way into a path segment, as in `Dockerfile.*`.
+    // Only whole leading segments name a directory, so cut back to the last
+    // separator rather than to the wildcard itself.
+    let split_at = pattern[..wildcard_pos]
+        .rfind('/')
+        .map_or(0, |slash| slash + 1);
+    pattern[..split_at].trim_end_matches('/').to_string()
 }
 
 /// Adjust a cross-workspace pattern to be relative to its resolved base
@@ -796,6 +799,26 @@ mod tests {
         assert!(is_supported_path(Path::new("Dockerfile")));
         assert!(is_supported_path(Path::new(".dockerignore")));
         assert!(!is_supported_path(Path::new("Makefile")));
+    }
+
+    /// A wildcard part-way into a segment, as in `Dockerfile.*`, must not be
+    /// mistaken for a directory; only whole leading segments name one.
+    #[cfg(feature = "walk")]
+    #[test]
+    fn test_extract_cross_workspace_base_keeps_whole_segments() {
+        assert_eq!(
+            extract_cross_workspace_base("../infra/Dockerfile.*"),
+            "../infra"
+        );
+        assert_eq!(extract_cross_workspace_base("../infra/*.tf"), "../infra");
+        assert_eq!(
+            extract_cross_workspace_base("../dodeca/crates/**/*.rs"),
+            "../dodeca/crates"
+        );
+        assert_eq!(
+            extract_cross_workspace_base("../infra/Dockerfile"),
+            "../infra/Dockerfile"
+        );
     }
 
     #[test]
