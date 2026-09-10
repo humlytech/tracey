@@ -261,6 +261,14 @@ impl InlineCodeHandler for TraceyInlineCodeHandler {
 
 /// Get devicon class for a file path based on extension
 fn devicon_class(path: &str) -> Option<&'static str> {
+    // Docker names its files rather than extending them, so check the whole
+    // file name before falling back to the extension.
+    if matches!(
+        tracey_core::source_language_key(Path::new(path)),
+        Some("dockerfile" | "dockerignore")
+    ) {
+        return Some("devicon-docker-plain");
+    }
     let ext = path.rsplit('.').next()?;
     match ext {
         // Systems languages
@@ -310,6 +318,8 @@ fn devicon_class(path: &str) -> Option<&'static str> {
         "toml" => Some("devicon-toml-plain"),
         "xml" => Some("devicon-xml-plain"),
         "sql" => Some("devicon-postgresql-plain"),
+        // Infrastructure
+        "tf" | "tfvars" => Some("devicon-terraform-plain"),
         // Web
         "html" | "htm" => Some("devicon-html5-plain"),
         "css" => Some("devicon-css3-plain"),
