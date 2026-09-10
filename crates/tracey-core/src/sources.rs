@@ -3,7 +3,6 @@
 use crate::lexer::{Reqs, extract_from_content};
 use eyre::Result;
 use std::ffi::OsStr;
-#[cfg(feature = "walk")]
 use std::path::Path;
 use std::path::PathBuf;
 
@@ -17,86 +16,161 @@ pub struct ExtractionResult {
 
 /// File extensions that tracey knows how to scan for requirement references.
 pub const SUPPORTED_EXTENSIONS: &[&str] = &[
-    "rs",     // Rust
-    "swift",  // Swift
-    "ts",     // TypeScript
-    "tsx",    // TypeScript JSX
-    "mts",    // TypeScript ES module
-    "cts",    // TypeScript CommonJS
-    "js",     // JavaScript
-    "jsx",    // JavaScript JSX
-    "mjs",    // JavaScript ES module
-    "cjs",    // JavaScript CommonJS
-    "go",     // Go
-    "c",      // C
-    "h",      // C headers
-    "cpp",    // C++
-    "hpp",    // C++ headers
-    "cc",     // C++
-    "cxx",    // C++
-    "m",      // Objective-C
-    "mm",     // Objective-C++
-    "java",   // Java
-    "kt",     // Kotlin
-    "kts",    // Kotlin script
-    "scala",  // Scala
-    "groovy", // Groovy
-    "cs",     // C#
-    "zig",    // Zig
-    "php",    // PHP
-    "py",     // Python
-    "rb",     // Ruby
-    "r",      // R
-    "R",      // R (uppercase)
-    "dart",   // Dart
-    "lua",    // Lua
-    "asm",    // Assembly
-    "s",      // Assembly
-    "S",      // Assembly (uppercase)
-    "pl",     // Perl
-    "pm",     // Perl module
-    "hs",     // Haskell
-    "lhs",    // Literate Haskell
-    "ex",     // Elixir
-    "exs",    // Elixir script
-    "erl",    // Erlang
-    "hrl",    // Erlang header
-    "clj",    // Clojure
-    "cljs",   // ClojureScript
-    "cljc",   // Clojure common
-    "edn",    // EDN
-    "fs",     // F#
-    "fsi",    // F# script
-    "fsx",    // F# script
-    "vb",     // Visual Basic
-    "vbs",    // VBScript
-    "cob",    // COBOL
-    "cbl",    // COBOL
-    "cpy",    // COBOL copybook
-    "jl",     // Julia
-    "d",      // D
-    "ps1",    // PowerShell
-    "psm1",   // PowerShell module
-    "psd1",   // PowerShell data
-    "cmake",  // CMake
-    "ml",     // OCaml
-    "mli",    // OCaml interface
-    "sh",     // Shell/Bash
-    "bash",   // Bash
-    "zsh",    // Zsh
-    "nix",    // Nix
-    "yml",    // YAML
-    "yaml",   // YAML (alternate extension)
-    "json5",  // JSON5
-    "lean",   // Lean
-    "svelte", // Svelte
+    "rs",           // Rust
+    "swift",        // Swift
+    "ts",           // TypeScript
+    "tsx",          // TypeScript JSX
+    "mts",          // TypeScript ES module
+    "cts",          // TypeScript CommonJS
+    "js",           // JavaScript
+    "jsx",          // JavaScript JSX
+    "mjs",          // JavaScript ES module
+    "cjs",          // JavaScript CommonJS
+    "go",           // Go
+    "c",            // C
+    "h",            // C headers
+    "cpp",          // C++
+    "hpp",          // C++ headers
+    "cc",           // C++
+    "cxx",          // C++
+    "m",            // Objective-C
+    "mm",           // Objective-C++
+    "java",         // Java
+    "kt",           // Kotlin
+    "kts",          // Kotlin script
+    "scala",        // Scala
+    "groovy",       // Groovy
+    "cs",           // C#
+    "zig",          // Zig
+    "php",          // PHP
+    "py",           // Python
+    "rb",           // Ruby
+    "r",            // R
+    "R",            // R (uppercase)
+    "dart",         // Dart
+    "lua",          // Lua
+    "asm",          // Assembly
+    "s",            // Assembly
+    "S",            // Assembly (uppercase)
+    "pl",           // Perl
+    "pm",           // Perl module
+    "hs",           // Haskell
+    "lhs",          // Literate Haskell
+    "ex",           // Elixir
+    "exs",          // Elixir script
+    "erl",          // Erlang
+    "hrl",          // Erlang header
+    "clj",          // Clojure
+    "cljs",         // ClojureScript
+    "cljc",         // Clojure common
+    "edn",          // EDN
+    "fs",           // F#
+    "fsi",          // F# script
+    "fsx",          // F# script
+    "vb",           // Visual Basic
+    "vbs",          // VBScript
+    "cob",          // COBOL
+    "cbl",          // COBOL
+    "cpy",          // COBOL copybook
+    "jl",           // Julia
+    "d",            // D
+    "ps1",          // PowerShell
+    "psm1",         // PowerShell module
+    "psd1",         // PowerShell data
+    "cmake",        // CMake
+    "ml",           // OCaml
+    "mli",          // OCaml interface
+    "sh",           // Shell/Bash
+    "bash",         // Bash
+    "zsh",          // Zsh
+    "nix",          // Nix
+    "yml",          // YAML
+    "yaml",         // YAML (alternate extension)
+    "json5",        // JSON5
+    "lean",         // Lean
+    "svelte",       // Svelte
+    "tf",           // Terraform (HCL)
+    "tfvars",       // Terraform variable definitions (HCL)
+    "dockerfile",   // Dockerfile (e.g. prod.dockerfile)
+    "dockerignore", // Docker ignore file (e.g. Dockerfile.dev.dockerignore)
 ];
 
+/// File names that tracey knows how to scan even though they carry no
+/// meaningful extension.
+///
+/// Docker identifies its files by name rather than by extension, so
+/// `Dockerfile` and `.dockerignore` have to be recognised whole.
+pub const SUPPORTED_FILENAMES: &[&str] = &[
+    "Dockerfile",    // Docker build recipe
+    ".dockerignore", // Docker build-context exclusions
+];
+
+/// Docker build recipes are commonly suffixed rather than extended, as in
+/// `Dockerfile.dev` or `Dockerfile.builder`. Match that whole family.
+const DOCKERFILE_NAME_PREFIX: &str = "dockerfile.";
+
 /// Check if a file extension is supported for scanning
+///
+/// Files that Docker identifies by name instead of by extension are not
+/// covered here; use [`is_supported_path`] to classify a whole path.
 pub fn is_supported_extension(ext: &OsStr) -> bool {
     ext.to_str()
         .map(|e| SUPPORTED_EXTENSIONS.contains(&e))
         .unwrap_or(false)
+}
+
+/// Canonical language key for a source path, or `None` if tracey cannot scan it.
+///
+/// This is normally just the file extension. Files that Docker identifies by
+/// name rather than extension map onto the synthetic keys `"dockerfile"` and
+/// `"dockerignore"` so that callers can dispatch on a single token.
+pub fn source_language_key(path: &Path) -> Option<&'static str> {
+    if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+        // Compared case-insensitively: `dockerfile` and `Dockerfile` name the
+        // same file on macOS and Windows, and both spellings occur in the wild.
+        let lower = name.to_ascii_lowercase();
+        for known in SUPPORTED_FILENAMES {
+            if lower == known.to_ascii_lowercase() {
+                return Some(docker_key_for_name(&lower));
+            }
+        }
+        if lower.starts_with(DOCKERFILE_NAME_PREFIX) {
+            return Some(docker_key_for_name(&lower));
+        }
+    }
+
+    let ext = path.extension().and_then(|e| e.to_str())?;
+    SUPPORTED_EXTENSIONS.iter().copied().find(|e| *e == ext)
+}
+
+/// Pick between the two Docker dialects for a lowercased file name.
+///
+/// BuildKit lets a build recipe carry a sibling ignore file named after it
+/// (`Dockerfile.dev.dockerignore`), so the suffix decides, not the prefix.
+fn docker_key_for_name(lower_name: &str) -> &'static str {
+    if lower_name.ends_with("dockerignore") {
+        "dockerignore"
+    } else {
+        "dockerfile"
+    }
+}
+
+/// Check if tracey can scan the file at this path for requirement references.
+///
+/// Prefer this over [`is_supported_extension`]: it also recognises the files
+/// Docker identifies by name, such as `Dockerfile` and `.dockerignore`.
+pub fn is_supported_path(path: &Path) -> bool {
+    source_language_key(path).is_some()
+}
+
+/// Human-readable list of the file types tracey can scan, for diagnostics.
+pub fn supported_file_types_display() -> String {
+    SUPPORTED_EXTENSIONS
+        .iter()
+        .map(|ext| format!(".{ext}"))
+        .chain(SUPPORTED_FILENAMES.iter().map(|name| name.to_string()))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// Check if a file extension identifies a specification source tracey can load.
@@ -272,11 +346,8 @@ impl Sources for WalkSources {
 
                     let path = entry.path();
 
-                    // Only supported file extensions
-                    if path
-                        .extension()
-                        .is_none_or(|ext| !is_supported_extension(ext))
-                    {
+                    // Only file types tracey knows how to scan
+                    if !is_supported_path(path) {
                         return ignore::WalkState::Continue;
                     }
 
@@ -684,9 +755,56 @@ mod tests {
         assert!(is_supported_extension(OsStr::new("lean")));
         assert!(is_supported_extension(OsStr::new("svelte")));
 
+        assert!(is_supported_extension(OsStr::new("tf")));
+        assert!(is_supported_extension(OsStr::new("tfvars")));
+
         assert!(!is_supported_extension(OsStr::new("md")));
         assert!(!is_supported_extension(OsStr::new("txt")));
         assert!(!is_supported_extension(OsStr::new("json")));
+    }
+
+    /// Docker identifies its files by name, so classification cannot go through
+    /// the extension alone.
+    #[test]
+    fn test_source_language_key_for_named_docker_files() {
+        let key = |p: &str| source_language_key(Path::new(p));
+
+        assert_eq!(key("Dockerfile"), Some("dockerfile"));
+        assert_eq!(key("build/Dockerfile"), Some("dockerfile"));
+        assert_eq!(key("dockerfile"), Some("dockerfile"));
+        assert_eq!(key("Dockerfile.dev"), Some("dockerfile"));
+        assert_eq!(key("prod.dockerfile"), Some("dockerfile"));
+
+        assert_eq!(key(".dockerignore"), Some("dockerignore"));
+        assert_eq!(key("app/.dockerignore"), Some("dockerignore"));
+        // BuildKit lets an ignore file be named after its build recipe.
+        assert_eq!(key("Dockerfile.dev.dockerignore"), Some("dockerignore"));
+
+        assert_eq!(key("main.tf"), Some("tf"));
+        assert_eq!(key("prod.tfvars"), Some("tfvars"));
+        assert_eq!(key("lib.rs"), Some("rs"));
+
+        assert_eq!(key("Makefile"), None);
+        assert_eq!(key("notes.txt"), None);
+        assert_eq!(key("docker-compose.override"), None);
+    }
+
+    /// `.dockerignore` and `Dockerfile` have no extension at all, so the old
+    /// extension-only gate dropped them before include patterns were consulted.
+    #[test]
+    fn test_supported_path_accepts_extensionless_docker_files() {
+        assert!(is_supported_path(Path::new("Dockerfile")));
+        assert!(is_supported_path(Path::new(".dockerignore")));
+        assert!(!is_supported_path(Path::new("Makefile")));
+    }
+
+    #[test]
+    fn test_supported_file_types_display_lists_named_files() {
+        let display = supported_file_types_display();
+        assert!(display.contains(".rs"));
+        assert!(display.contains(".tf"));
+        assert!(display.contains("Dockerfile"));
+        assert!(display.contains(".dockerignore"));
     }
 
     /// The extension gate in `WalkSources` runs *before* include patterns are
