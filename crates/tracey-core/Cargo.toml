@@ -60,6 +60,8 @@ reverse = [
   "dep:arborium-lean",
   "dep:arborium-svelte",
   "dep:arborium-yaml",
+  "dep:arborium-hcl",
+  "dep:arborium-dockerfile",
 ]
 
 [dependencies]
@@ -107,6 +109,8 @@ arborium-nix = { workspace = true, optional = true }
 arborium-lean = { workspace = true, optional = true }
 arborium-svelte = { workspace = true, optional = true }
 arborium-yaml = { workspace = true, optional = true }
+arborium-hcl = { workspace = true, optional = true }
+arborium-dockerfile = { workspace = true, optional = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
