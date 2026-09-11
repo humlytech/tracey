@@ -389,6 +389,14 @@ fn extract_from_content_text_based(path: &Path, content: &str, reqs: &mut Reqs) 
 
     let syntax = CommentSyntax::for_path(path);
 
+    // Collected up front so the line pass can tell whether an opener it finds
+    // is really inside a block comment, which the block pass already covers.
+    let block_spans = if syntax.block {
+        find_block_comment_spans(content)
+    } else {
+        Vec::new()
+    };
+
     // Scan for comments and extract references
     for (line_idx, line) in content.lines().enumerate() {
         let line_num = LineNumber::from_zero_based(line_idx);
@@ -416,58 +424,80 @@ fn extract_from_content_text_based(path: &Path, content: &str, reqs: &mut Reqs) 
         };
 
         if let Some(comment_pos) = comment_pos {
-            let comment = &line[comment_pos..];
-            let comment_start = line_start.add(comment_pos);
+            let absolute = line_start.as_usize() + comment_pos;
+            // Inside a block comment this opener is not one: the block pass
+            // covers that text, and scanning it here too would double-count
+            // every reference in it.
+            let inside_block = block_spans.iter().any(|span| span.contains(&absolute));
 
-            if check_ignore_directives(comment, line_num, &mut ignore_state) {
-                extract_references_from_text(
-                    path,
-                    comment,
-                    comment_start,
-                    line_num,
-                    &file_code_mask,
-                    reqs,
-                );
+            if !inside_block {
+                let comment = &line[comment_pos..];
+                let comment_start = line_start.add(comment_pos);
+
+                if check_ignore_directives(comment, line_num, &mut ignore_state) {
+                    extract_references_from_text(
+                        path,
+                        comment,
+                        comment_start,
+                        line_num,
+                        &file_code_mask,
+                        reqs,
+                    );
+                }
             }
         }
     }
 
     // Handle block comments /* */ — only for languages that have them.
-    if syntax.block {
-        let mut in_block_comment = false;
-        let mut block_start = 0;
-        let mut block_line = LineNumber::from_one_based(1);
-        let mut i = 0;
-        let bytes = content.as_bytes();
+    for span in &block_spans {
+        // The delimiters themselves are not part of the comment text.
+        let block_start = span.start + 2;
+        let block_end = span.end - 2;
+        let block_content = &content[block_start..block_end];
+        let block_line = line_starts.line_number_for_offset(ByteOffset::from_usize(span.start));
 
-        while i < bytes.len() {
-            if in_block_comment {
-                if i + 1 < bytes.len() && bytes[i] == b'*' && bytes[i + 1] == b'/' {
-                    let block_content = &content[block_start..i];
-                    if check_ignore_directives(block_content, block_line, &mut ignore_state) {
-                        extract_references_from_text(
-                            path,
-                            block_content,
-                            ByteOffset::from_usize(block_start),
-                            block_line,
-                            &file_code_mask,
-                            reqs,
-                        );
-                    }
-                    in_block_comment = false;
-                    i += 2;
-                    continue;
-                }
-            } else if i + 1 < bytes.len() && bytes[i] == b'/' && bytes[i + 1] == b'*' {
-                in_block_comment = true;
-                block_start = i + 2;
-                block_line = line_starts.line_number_for_offset(ByteOffset::from_usize(i));
+        if check_ignore_directives(block_content, block_line, &mut ignore_state) {
+            extract_references_from_text(
+                path,
+                block_content,
+                ByteOffset::from_usize(block_start),
+                block_line,
+                &file_code_mask,
+                reqs,
+            );
+        }
+    }
+}
+
+/// Byte ranges of the closed `/* ... */` spans in a file, delimiters included.
+///
+/// An unterminated `/*` is not reported, which keeps it out of both passes just
+/// as it was before these spans were collected.
+#[cfg(not(feature = "reverse"))]
+fn find_block_comment_spans(content: &str) -> Vec<std::ops::Range<usize>> {
+    let bytes = content.as_bytes();
+    let mut spans = Vec::new();
+    let mut open: Option<usize> = None;
+    let mut i = 0;
+
+    while i + 1 < bytes.len() {
+        match open {
+            Some(start) if bytes[i] == b'*' && bytes[i + 1] == b'/' => {
+                spans.push(start..i + 2);
+                open = None;
                 i += 2;
                 continue;
             }
-            i += 1;
+            None if bytes[i] == b'/' && bytes[i + 1] == b'*' => {
+                open = Some(i);
+                i += 2;
+                continue;
+            }
+            _ => i += 1,
         }
     }
+
+    spans
 }
 
 /// Extract rule references from a piece of text (comment content)
@@ -1288,6 +1318,35 @@ pub fn reconnect() {}
             ],
             "every HCL comment style should yield a reference"
         );
+    }
+
+    /// HCL is the one syntax with both `#` and `/* */`, so a `#` inside a
+    /// block comment used to be extracted twice, once per scanning pass, which
+    /// double-counted the reference.
+    #[test]
+    fn test_terraform_hash_inside_block_comment_counted_once() {
+        let content = "/*\n # r[impl infra.bucket.name]\n*/\n";
+        let reqs = Reqs::extract_from_content(Path::new("main.tf"), content);
+        let found: Vec<String> = reqs
+            .references
+            .iter()
+            .map(|r| r.req_id.to_string())
+            .collect();
+        assert_eq!(found, vec!["infra.bucket.name"]);
+    }
+
+    /// The same double counting applied to a `//` inside a block comment, in
+    /// every language with C-style comments.
+    #[test]
+    fn test_rust_line_comment_inside_block_comment_counted_once() {
+        let content = "/*\n // r[impl channel.id.parity]\n*/\n";
+        let reqs = Reqs::extract_from_content(Path::new("lib.rs"), content);
+        let found: Vec<String> = reqs
+            .references
+            .iter()
+            .map(|r| r.req_id.to_string())
+            .collect();
+        assert_eq!(found, vec!["channel.id.parity"]);
     }
 
     #[test]
