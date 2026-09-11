@@ -313,7 +313,7 @@ fn devicon_class(path: &str) -> Option<&'static str> {
         "sh" | "bash" | "zsh" => Some("devicon-bash-plain"),
         "ps1" | "psm1" => Some("devicon-powershell-plain"),
         // Config/data
-        "json" => Some("devicon-json-plain"),
+        "json" | "jsonc" => Some("devicon-json-plain"),
         "yaml" | "yml" => Some("devicon-yaml-plain"),
         "toml" => Some("devicon-toml-plain"),
         "xml" => Some("devicon-xml-plain"),

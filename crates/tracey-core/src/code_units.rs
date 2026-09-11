@@ -1529,9 +1529,10 @@ pub fn extract_refs_with_warnings(path: &Path, source: &str) -> ExtractedRefs {
         "go" => arborium_go::language(),
         "java" => arborium_java::language(),
         "py" => arborium_python::language(),
-        // json5 shares // and /* */ comment syntax with JS/TS; reuse the TS grammar
-        // so that tree-sitter can identify comment nodes in the reverse path.
-        "ts" | "tsx" | "js" | "jsx" | "mts" | "cts" | "mjs" | "cjs" | "json5" => {
+        // json5 and jsonc share // and /* */ comment syntax with JS/TS; reuse
+        // the TS grammar so that tree-sitter can identify comment nodes in the
+        // reverse path.
+        "ts" | "tsx" | "js" | "jsx" | "mts" | "cts" | "mjs" | "cjs" | "json5" | "jsonc" => {
             arborium_typescript::language()
         }
         "php" => arborium_php::language(),

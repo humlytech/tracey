@@ -146,6 +146,17 @@ steps:
 }
 ```
 
+**JSONC** (`.jsonc`) — the same `//` and `/* */` comments, on strict JSON syntax:
+
+```jsonc
+// r[impl tsconfig.strictness]
+{
+  "compilerOptions": {
+    "strict": true /* r[verify tsconfig.strictness] */
+  }
+}
+```
+
 **Terraform** (`.tf`, `.tfvars`) — HCL accepts `#`, `//` and `/* */`, and a trailing `#` comment may follow a value:
 
 ```hcl

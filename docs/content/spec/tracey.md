@@ -270,6 +270,7 @@ Tracey MUST use tree-sitter for parsing source code to extract comments. This en
 > | JavaScript | `.js`, `.jsx`, `.cjs`, `.mjs` | `//`, `/* */`               |
 > | YAML       | `.yml`, `.yaml`         | `#`                               |
 > | JSON5      | `.json5`                | `//`, `/* */`                     |
+> | JSONC      | `.jsonc`                | `//`, `/* */`                     |
 > | Terraform  | `.tf`, `.tfvars`        | `#`, `//`, `/* */`                |
 > | Docker     | `Dockerfile`, `Dockerfile.*`, `.dockerfile`, `.dockerignore` | `#` at line start |
 

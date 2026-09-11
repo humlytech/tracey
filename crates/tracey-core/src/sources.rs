@@ -87,6 +87,7 @@ pub const SUPPORTED_EXTENSIONS: &[&str] = &[
     "yml",          // YAML
     "yaml",         // YAML (alternate extension)
     "json5",        // JSON5
+    "jsonc",        // JSON with comments
     "lean",         // Lean
     "svelte",       // Svelte
     "tf",           // Terraform (HCL)
@@ -694,6 +695,50 @@ mod tests {
     }
 
     #[test]
+    fn test_memory_sources_jsonc() {
+        let result = Reqs::extract(
+            MemorySources::new()
+                .add("tsconfig.jsonc", "// r[impl jsonc.req.one]")
+                .add("settings.jsonc", "// r[verify jsonc.req.two]")
+                .add("other.jsonc", "/* r[impl jsonc.req.three] */"),
+        )
+        .unwrap();
+
+        assert_eq!(result.reqs.len(), 3);
+        assert_eq!(result.reqs.references[0].req_id, "jsonc.req.one");
+        assert_eq!(result.reqs.references[1].req_id, "jsonc.req.two");
+        assert_eq!(result.reqs.references[2].req_id, "jsonc.req.three");
+        assert!(result.warnings.is_empty());
+    }
+
+    #[cfg(feature = "reverse")]
+    #[test]
+    fn test_memory_sources_jsonc_reverse() {
+        let result = Reqs::extract(
+            MemorySources::new()
+                .add("tsconfig.jsonc", "// r[impl jsonc.one]")
+                .add(
+                    "settings.jsonc",
+                    "{\n  \"key\": \"value\" /* r[verify jsonc.two] */\n}",
+                ),
+        )
+        .unwrap();
+
+        assert_eq!(result.reqs.len(), 2);
+        assert_eq!(result.reqs.references[0].req_id, "jsonc.one");
+        assert_eq!(
+            result.reqs.references[0].verb,
+            crate::lexer::RefVerb::Impl
+        );
+        assert_eq!(result.reqs.references[1].req_id, "jsonc.two");
+        assert_eq!(
+            result.reqs.references[1].verb,
+            crate::lexer::RefVerb::Verify
+        );
+        assert!(result.warnings.is_empty());
+    }
+
+    #[test]
     fn test_memory_sources_mixed_languages() {
         let result = Reqs::extract(
             MemorySources::new()
@@ -769,6 +814,7 @@ mod tests {
         assert!(is_supported_extension(OsStr::new("yml")));
         assert!(is_supported_extension(OsStr::new("yaml")));
         assert!(is_supported_extension(OsStr::new("json5")));
+        assert!(is_supported_extension(OsStr::new("jsonc")));
         assert!(is_supported_extension(OsStr::new("lean")));
         assert!(is_supported_extension(OsStr::new("svelte")));
 

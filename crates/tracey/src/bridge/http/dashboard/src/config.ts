@@ -63,6 +63,7 @@ export const LANG_DEVICON_MAP: Record<string, string> = {
   rb: "devicon-ruby-plain",
   md: "devicon-markdown-original",
   json: "devicon-json-plain",
+  jsonc: "devicon-json-plain",
   yaml: "devicon-yaml-plain",
   yml: "devicon-yaml-plain",
   toml: "devicon-toml-plain",

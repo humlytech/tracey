@@ -146,6 +146,9 @@ fn arborium_language(path: &str) -> Option<&'static str> {
         "sh" | "bash" | "zsh" => Some("bash"),
         // Config
         "json" => Some("json"),
+        // Highlighted as JavaScript rather than JSON, because the JSON grammar
+        // rejects the comments that are the whole point of .jsonc.
+        "jsonc" => Some("javascript"),
         "yaml" | "yml" => Some("yaml"),
         "toml" => Some("toml"),
         "xml" => Some("xml"),
