@@ -140,7 +140,19 @@ pub fn source_language_key(path: &Path) -> Option<&'static str> {
     }
 
     let ext = path.extension().and_then(|e| e.to_str())?;
-    SUPPORTED_EXTENSIONS.iter().copied().find(|e| *e == ext)
+    if let Some(known) = SUPPORTED_EXTENSIONS.iter().copied().find(|e| *e == ext) {
+        return Some(known);
+    }
+
+    // Docker's extension-style spellings vary in case too, as in
+    // `prod.Dockerfile`. Only the two Docker keys are matched this way; every
+    // other extension stays case-sensitive, because tracey distinguishes
+    // extensions such as `.r` and `.R`.
+    match ext.to_ascii_lowercase().as_str() {
+        "dockerfile" => Some("dockerfile"),
+        "dockerignore" => Some("dockerignore"),
+        _ => None,
+    }
 }
 
 /// Pick between the two Docker dialects for a lowercased file name.
@@ -782,6 +794,19 @@ mod tests {
         assert_eq!(key("app/.dockerignore"), Some("dockerignore"));
         // BuildKit lets an ignore file be named after its build recipe.
         assert_eq!(key("Dockerfile.dev.dockerignore"), Some("dockerignore"));
+
+        // The extension-style spellings are case-insensitive too.
+        assert_eq!(key("prod.Dockerfile"), Some("dockerfile"));
+        assert_eq!(key("prod.DOCKERFILE"), Some("dockerfile"));
+        assert_eq!(key("build/prod.DockerIgnore"), Some("dockerignore"));
+        assert_eq!(key("DOCKERFILE"), Some("dockerfile"));
+        assert_eq!(key(".DOCKERIGNORE"), Some("dockerignore"));
+
+        // Case-sensitivity is unchanged for every other language, which is
+        // what keeps `.r` and `.R` distinct entries.
+        assert_eq!(key("script.R"), Some("R"));
+        assert_eq!(key("script.r"), Some("r"));
+        assert_eq!(key("lib.RS"), None);
 
         assert_eq!(key("main.tf"), Some("tf"));
         assert_eq!(key("prod.tfvars"), Some("tfvars"));
