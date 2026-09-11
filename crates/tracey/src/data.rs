@@ -699,7 +699,10 @@ struct ScanRootPattern {
 /// so that the walker can start from a narrowed root instead of scanning
 /// the entire project tree.
 fn split_glob_prefix(pattern: &str) -> (&str, &str) {
-    let Some(wildcard_pos) = pattern.find("**").or_else(|| pattern.find('*')) else {
+    // The earliest `*` bounds the base, whether or not it opens a `**`.
+    // Searching for "**" first would skip past an earlier single `*` and leave
+    // a wildcard in the base, as in `services/*/src/**/*.rs`.
+    let Some(wildcard_pos) = pattern.find('*') else {
         // No wildcards — exact path
         return (pattern, "");
     };
@@ -3288,5 +3291,20 @@ mod scan_root_tests {
         assert_eq!(split_glob_prefix("../marq/**/*.rs"), ("../marq", "**/*.rs"));
         assert_eq!(split_glob_prefix("spec.md"), ("spec.md", ""));
         assert_eq!(split_glob_prefix("Dockerfile"), ("Dockerfile", ""));
+    }
+
+    /// The base must stop at the earliest wildcard. Looking for `**` first
+    /// skipped past an earlier single `*` and left a wildcard in the base,
+    /// which then matched no directory and dropped the pattern.
+    #[test]
+    fn test_split_glob_prefix_stops_at_earliest_wildcard() {
+        assert_eq!(
+            split_glob_prefix("services/*/src/**/*.rs"),
+            ("services", "*/src/**/*.rs")
+        );
+        assert_eq!(
+            split_glob_prefix("crates/*-core/**/*.rs"),
+            ("crates", "*-core/**/*.rs")
+        );
     }
 }

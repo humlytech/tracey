@@ -465,8 +465,10 @@ fn is_excluded(path: &Path, root: &Path, patterns: &[String]) -> bool {
 /// e.g., "../dodeca/crates/bearmark/**/*.rs" -> "../dodeca/crates/bearmark"
 #[cfg(feature = "walk")]
 fn extract_cross_workspace_base(pattern: &str) -> String {
-    // Find the first occurrence of "**" or "*"
-    let Some(wildcard_pos) = pattern.find("**").or_else(|| pattern.find('*')) else {
+    // The earliest `*` bounds the base, whether or not it opens a `**`.
+    // Searching for "**" first would skip past an earlier single `*` and leave
+    // a wildcard in the base, as in `services/*/src/**/*.rs`.
+    let Some(wildcard_pos) = pattern.find('*') else {
         // No wildcards, use the pattern as-is
         return pattern.to_string();
     };
@@ -843,6 +845,11 @@ mod tests {
         assert_eq!(
             extract_cross_workspace_base("../infra/Dockerfile"),
             "../infra/Dockerfile"
+        );
+        // The earliest wildcard bounds the base, even when a `**` follows it.
+        assert_eq!(
+            extract_cross_workspace_base("../services/*/src/**/*.rs"),
+            "../services"
         );
     }
 
