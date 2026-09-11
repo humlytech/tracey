@@ -228,6 +228,87 @@ async fn test_rule_not_found() {
 }
 
 // ============================================================================
+// Terraform and Docker Source Tests
+// ============================================================================
+
+/// Terraform and Docker annotations have to survive the whole pipeline, not
+/// just the lexer. `Dockerfile` and `.dockerignore` are the interesting cases:
+/// neither has a file extension, so the scan-path gate has to match by name.
+#[tokio::test]
+async fn test_terraform_and_docker_annotations_are_covered() {
+    let service = create_test_service_named("infra").await;
+
+    for (rule_id, expected_file) in [
+        ("infra.bucket.versioning", "main.tf"),
+        ("infra.region.pinned", "prod.tfvars"),
+        ("deploy.image.minimal", "Dockerfile"),
+        ("deploy.image.nonroot", "Dockerfile"),
+        ("deploy.image.dev-tools", "Dockerfile.dev"),
+        ("build.context.slim", ".dockerignore"),
+    ] {
+        let rule = rpc(service.client.rule(rid(rule_id)).await)
+            .unwrap_or_else(|| panic!("{rule_id} should exist in the spec"));
+
+        let files: Vec<String> = rule
+            .coverage
+            .iter()
+            .flat_map(|c| c.impl_refs.iter())
+            .map(|r| r.file.clone())
+            .collect();
+
+        assert!(
+            files.iter().any(|f| f.ends_with(expected_file)),
+            "{rule_id} should be implemented in {expected_file}, found {files:?}"
+        );
+    }
+}
+
+/// Docker strips a `#` only at the start of a line, so an annotation written
+/// after an instruction is not a reference and must leave the rule uncovered.
+#[tokio::test]
+async fn test_dockerfile_trailing_hash_leaves_rule_uncovered() {
+    let service = create_test_service_named("infra").await;
+
+    let rule = rpc(service.client.rule(rid("deploy.image.healthcheck")).await)
+        .expect("deploy.image.healthcheck should exist in the spec");
+
+    let impl_refs: Vec<String> = rule
+        .coverage
+        .iter()
+        .flat_map(|c| c.impl_refs.iter())
+        .map(|r| format!("{}:{}", r.file, r.line))
+        .collect();
+
+    assert!(
+        impl_refs.is_empty(),
+        "a trailing # in a Dockerfile is part of the instruction, not a comment, \
+         but these references were extracted: {impl_refs:?}"
+    );
+}
+
+/// The Terraform reference in `main.tf` sits behind `//`, which HCL accepts
+/// alongside `#`.
+#[tokio::test]
+async fn test_terraform_slash_comment_yields_verify_reference() {
+    let service = create_test_service_named("infra").await;
+
+    let rule = rpc(service.client.rule(rid("infra.bucket.versioning")).await)
+        .expect("infra.bucket.versioning should exist in the spec");
+
+    let verify_files: Vec<String> = rule
+        .coverage
+        .iter()
+        .flat_map(|c| c.verify_refs.iter())
+        .map(|r| r.file.clone())
+        .collect();
+
+    assert!(
+        verify_files.iter().any(|f| f.ends_with("main.tf")),
+        "expected a verify reference from the // comment in main.tf, found {verify_files:?}"
+    );
+}
+
+// ============================================================================
 // Config API Tests
 // ============================================================================
 

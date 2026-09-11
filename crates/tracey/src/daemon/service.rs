@@ -115,6 +115,11 @@ fn html_escape(s: &str) -> String {
 
 /// Get arborium language name from file extension.
 fn arborium_language(path: &str) -> Option<&'static str> {
+    // Docker names its files rather than extending them, so check the whole
+    // file name before falling back to the extension.
+    if let Some(lang) = docker_language(path) {
+        return Some(lang);
+    }
     let ext = path.rsplit('.').next()?;
     match ext {
         // Rust
@@ -141,6 +146,9 @@ fn arborium_language(path: &str) -> Option<&'static str> {
         "sh" | "bash" | "zsh" => Some("bash"),
         // Config
         "json" => Some("json"),
+        // Highlighted as JavaScript rather than JSON, because the JSON grammar
+        // rejects the comments that are the whole point of .jsonc.
+        "jsonc" => Some("javascript"),
         "yaml" | "yml" => Some("yaml"),
         "toml" => Some("toml"),
         "xml" => Some("xml"),
@@ -196,6 +204,19 @@ fn arborium_language(path: &str) -> Option<&'static str> {
         "mat" => Some("matlab"),
         // Svelte
         "svelte" => Some("svelte"),
+        // Terraform
+        "tf" | "tfvars" => Some("hcl"),
+        _ => None,
+    }
+}
+
+/// Recognise the Docker file formats, which are named rather than extended.
+///
+/// Covers `Dockerfile`, suffixed variants such as `Dockerfile.dev`, and
+/// `.dockerignore`. All of them highlight as Dockerfiles.
+fn docker_language(path: &str) -> Option<&'static str> {
+    match tracey_core::source_language_key(Path::new(path)) {
+        Some("dockerfile" | "dockerignore") => Some("dockerfile"),
         _ => None,
     }
 }

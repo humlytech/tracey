@@ -255,9 +255,9 @@ dependencies = [
 
 [[package]]
 name = "arborium-dockerfile"
-version = "2.16.0"
+version = "2.18.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f2196d25a5ef3e2ff99e2e31fca2c4a3912e0242cc2696298a7f922b2d4c9d99"
+checksum = "54f567b2f106cea694126516b8ad20d44cddc40df8c16c77acf61ada303bfd9e"
 dependencies = [
  "arborium-sysroot",
  "cc",
@@ -343,9 +343,9 @@ dependencies = [
 
 [[package]]
 name = "arborium-hcl"
-version = "2.16.0"
+version = "2.18.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3669465447c57fba780684e6da72b90b4ba3a3e66e703c49d1cfb7d89a1a49d4"
+checksum = "30dc0e04b767c8345c41cc96b350e0e991826ff340d973bd52b1f27fc7963a12"
 dependencies = [
  "arborium-sysroot",
  "cc",
@@ -707,9 +707,9 @@ dependencies = [
 
 [[package]]
 name = "arborium-sysroot"
-version = "2.17.0"
+version = "2.18.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "260e0358abe4ede3af8b4df7a311bc9b6e4a60e4bd50af16deddfcd13759a908"
+checksum = "ddd9d120dd5df8b918cd96676a88f1233a66f10687d415b69f70b3396acddddf"
 dependencies = [
  "cc",
  "dlmalloc",
@@ -4499,11 +4499,13 @@ dependencies = [
  "arborium-cpp",
  "arborium-d",
  "arborium-dart",
+ "arborium-dockerfile",
  "arborium-elixir",
  "arborium-erlang",
  "arborium-fsharp",
  "arborium-go",
  "arborium-haskell",
+ "arborium-hcl",
  "arborium-java",
  "arborium-julia",
  "arborium-lean",

@@ -270,6 +270,9 @@ Tracey MUST use tree-sitter for parsing source code to extract comments. This en
 > | JavaScript | `.js`, `.jsx`, `.cjs`, `.mjs` | `//`, `/* */`               |
 > | YAML       | `.yml`, `.yaml`         | `#`                               |
 > | JSON5      | `.json5`                | `//`, `/* */`                     |
+> | JSONC      | `.jsonc`                | `//`, `/* */`                     |
+> | Terraform  | `.tf`, `.tfvars`        | `#`, `//`, `/* */`                |
+> | Docker     | `Dockerfile`, `Dockerfile.*`, `.dockerfile`, `.dockerignore` | `#` at line start |
 
 > r[ref.parser.unified]
 > The same tree-sitter based extraction MUST be used for both forward traceability (finding which requirements are implemented) and reverse traceability (finding which code units have requirement annotations).

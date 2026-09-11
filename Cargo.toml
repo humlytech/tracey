@@ -96,6 +96,8 @@ arborium = { version = "2.16.0", features = [
   "lang-nix",
   "lang-lean",
   "lang-svelte",
+  "lang-hcl",
+  "lang-dockerfile",
 ] }
 arborium-rust = "2.16.0"
 arborium-swift = "2.16.0"
@@ -130,6 +132,8 @@ arborium-nix = "2.16.0"
 arborium-lean = "2.16.0"
 arborium-svelte = "2.17.0"
 arborium-yaml = "2.16.0"
+arborium-hcl = "2.18.2"
+arborium-dockerfile = "2.18.2"
 
 # HTTP server for serve command
 axum = { version = "0.8", features = ["ws"] }

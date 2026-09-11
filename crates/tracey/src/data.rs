@@ -22,7 +22,7 @@ use tracey_core::{
     ParseWarning, RefVerb, ReqDefinition, ReqReference, Reqs, RuleId, RuleIdMatch,
     classify_reference_for_rule, parse_rule_id,
 };
-use tracey_core::{SUPPORTED_EXTENSIONS, is_supported_extension};
+use tracey_core::{is_supported_path, supported_file_types_display};
 use tracing::info;
 
 // Markdown rendering
@@ -261,6 +261,14 @@ impl InlineCodeHandler for TraceyInlineCodeHandler {
 
 /// Get devicon class for a file path based on extension
 fn devicon_class(path: &str) -> Option<&'static str> {
+    // Docker names its files rather than extending them, so check the whole
+    // file name before falling back to the extension.
+    if matches!(
+        tracey_core::source_language_key(Path::new(path)),
+        Some("dockerfile" | "dockerignore")
+    ) {
+        return Some("devicon-docker-plain");
+    }
     let ext = path.rsplit('.').next()?;
     match ext {
         // Systems languages
@@ -305,11 +313,13 @@ fn devicon_class(path: &str) -> Option<&'static str> {
         "sh" | "bash" | "zsh" => Some("devicon-bash-plain"),
         "ps1" | "psm1" => Some("devicon-powershell-plain"),
         // Config/data
-        "json" => Some("devicon-json-plain"),
+        "json" | "jsonc" => Some("devicon-json-plain"),
         "yaml" | "yml" => Some("devicon-yaml-plain"),
         "toml" => Some("devicon-toml-plain"),
         "xml" => Some("devicon-xml-plain"),
         "sql" => Some("devicon-postgresql-plain"),
+        // Infrastructure
+        "tf" | "tfvars" => Some("devicon-terraform-plain"),
         // Web
         "html" | "htm" => Some("devicon-html5-plain"),
         "css" => Some("devicon-css3-plain"),
@@ -689,14 +699,23 @@ struct ScanRootPattern {
 /// so that the walker can start from a narrowed root instead of scanning
 /// the entire project tree.
 fn split_glob_prefix(pattern: &str) -> (&str, &str) {
-    if let Some(wildcard_pos) = pattern.find("**").or_else(|| pattern.find('*')) {
-        let base = pattern[..wildcard_pos].trim_end_matches('/');
-        let suffix = &pattern[wildcard_pos..];
-        (base, suffix)
-    } else {
+    // The earliest `*` bounds the base, whether or not it opens a `**`.
+    // Searching for "**" first would skip past an earlier single `*` and leave
+    // a wildcard in the base, as in `services/*/src/**/*.rs`.
+    let Some(wildcard_pos) = pattern.find('*') else {
         // No wildcards — exact path
-        (pattern, "")
-    }
+        return (pattern, "");
+    };
+    // A wildcard may sit part-way into a path segment, as in `Dockerfile.*`.
+    // Only whole leading segments name a directory to walk from, so cut back to
+    // the last separator rather than to the wildcard itself.
+    let split_at = pattern[..wildcard_pos]
+        .rfind('/')
+        .map_or(0, |slash| slash + 1);
+    (
+        pattern[..split_at].trim_end_matches('/'),
+        &pattern[split_at..],
+    )
 }
 
 fn build_scan_roots(
@@ -858,11 +877,7 @@ fn full_walk_for_roots(
             {
                 continue;
             }
-            if include_supported_ext_only
-                && path
-                    .extension()
-                    .is_none_or(|ext| !is_supported_extension(ext))
-            {
+            if include_supported_ext_only && !is_supported_path(path) {
                 continue;
             }
             if !path_matches_root_pattern(path, root_pattern) {
@@ -893,7 +908,7 @@ fn update_cached_scan_paths(
                 .extension()
                 .is_some_and(tracey_core::is_spec_extension)
         } else if include_supported_ext_only {
-            changed.extension().is_some_and(is_supported_extension)
+            is_supported_path(changed)
         } else {
             true
         };
@@ -1266,19 +1281,13 @@ async fn scan_impl_files(
     let mut file_contents: BTreeMap<PathBuf, String> = BTreeMap::new();
     let mut reqs_by_file: BTreeMap<PathBuf, Reqs> = BTreeMap::new();
     for path in files {
-        match path.extension() {
-            Some(ext) if is_supported_extension(ext) => {}
-            Some(ext) => {
-                parse_failures.push((
-                    path.clone(),
-                    format!("unsupported file extension '.{}'", ext.to_string_lossy()),
-                ));
-                continue;
-            }
-            None => {
-                parse_failures.push((path.clone(), "file has no extension".to_string()));
-                continue;
-            }
+        if !is_supported_path(&path) {
+            let reason = match path.extension() {
+                Some(ext) => format!("unsupported file extension '.{}'", ext.to_string_lossy()),
+                None => "file has no extension".to_string(),
+            };
+            parse_failures.push((path.clone(), reason));
+            continue;
         }
 
         match get_cached_source_file(&path, overlay, cache, stats).await {
@@ -1873,11 +1882,7 @@ fn compute_validation_by_impl(
                 .strip_prefix(abs_root)
                 .map(|p| p.to_string_lossy().to_string())
                 .unwrap_or_else(|_| compute_relative_path(abs_root, config_path));
-            let supported_file_types = SUPPORTED_EXTENSIONS
-                .iter()
-                .map(|ext| format!(".{ext}"))
-                .collect::<Vec<_>>()
-                .join(", ");
+            let supported_file_types = supported_file_types_display();
 
             for (path, reason) in parse_failures {
                 let rel_path = path
@@ -2005,11 +2010,7 @@ async fn compute_workspace_diagnostics(
             .strip_prefix(abs_root)
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_else(|_| compute_relative_path(abs_root, config_path));
-        let supported_file_types = SUPPORTED_EXTENSIONS
-            .iter()
-            .map(|ext| format!(".{ext}"))
-            .collect::<Vec<_>>()
-            .join(", ");
+        let supported_file_types = supported_file_types_display();
 
         let diagnostics = include_parse_failures
             .iter()
@@ -3263,4 +3264,47 @@ fn build_outline(
     }
 
     entries
+}
+
+#[cfg(test)]
+mod scan_root_tests {
+    use super::split_glob_prefix;
+
+    /// The base has to be a real directory prefix. A wildcard part-way into a
+    /// segment, as in `Dockerfile.*`, used to yield the non-existent base
+    /// `Dockerfile.`, and the pattern was then dropped as a missing path.
+    #[test]
+    fn test_split_glob_prefix_keeps_whole_segments() {
+        assert_eq!(split_glob_prefix("Dockerfile.*"), ("", "Dockerfile.*"));
+        assert_eq!(
+            split_glob_prefix("infra/Dockerfile.*"),
+            ("infra", "Dockerfile.*")
+        );
+        assert_eq!(split_glob_prefix("src/test_*.rs"), ("src", "test_*.rs"));
+    }
+
+    #[test]
+    fn test_split_glob_prefix_segment_aligned_patterns_unchanged() {
+        assert_eq!(split_glob_prefix("*.tf"), ("", "*.tf"));
+        assert_eq!(split_glob_prefix("src/**/*.rs"), ("src", "**/*.rs"));
+        assert_eq!(split_glob_prefix("crates/**/*.rs"), ("crates", "**/*.rs"));
+        assert_eq!(split_glob_prefix("../marq/**/*.rs"), ("../marq", "**/*.rs"));
+        assert_eq!(split_glob_prefix("spec.md"), ("spec.md", ""));
+        assert_eq!(split_glob_prefix("Dockerfile"), ("Dockerfile", ""));
+    }
+
+    /// The base must stop at the earliest wildcard. Looking for `**` first
+    /// skipped past an earlier single `*` and left a wildcard in the base,
+    /// which then matched no directory and dropped the pattern.
+    #[test]
+    fn test_split_glob_prefix_stops_at_earliest_wildcard() {
+        assert_eq!(
+            split_glob_prefix("services/*/src/**/*.rs"),
+            ("services", "*/src/**/*.rs")
+        );
+        assert_eq!(
+            split_glob_prefix("crates/*-core/**/*.rs"),
+            ("crates", "*-core/**/*.rs")
+        );
+    }
 }

@@ -246,12 +246,17 @@ impl Backend {
         (line, col)
     }
 
+    /// Reference extraction is keyed on the path, so the real one has to be
+    /// passed in. An empty path matches no language: with the "reverse"
+    /// feature it reaches no grammar and yields nothing at all, and without it
+    /// every file is scanned as if it used `//` comments.
     fn replacement_edits_for_file(
+        path: &Path,
         content: &str,
         old_id: &tracey_core::RuleId,
         new_id: &str,
     ) -> Vec<TextEdit> {
-        let reqs = tracey_core::Reqs::extract_from_content(&PathBuf::new(), content);
+        let reqs = tracey_core::Reqs::extract_from_content(path, content);
         let old_text = old_id.to_string();
         let mut edits = Vec::new();
         for reference in &reqs.references {
@@ -440,16 +445,13 @@ impl Backend {
                 if !ft.is_file() {
                     continue;
                 }
-                if path
-                    .extension()
-                    .is_none_or(|ext| !tracey_core::is_supported_extension(ext))
-                {
+                if !tracey_core::is_supported_path(path) {
                     continue;
                 }
                 let Ok(content) = std::fs::read_to_string(path) else {
                     continue;
                 };
-                let edits = Self::replacement_edits_for_file(&content, &old_id, new_rule);
+                let edits = Self::replacement_edits_for_file(path, &content, &old_id, new_rule);
                 if edits.is_empty() {
                     continue;
                 }
@@ -732,11 +734,10 @@ impl Backend {
             if !ft.is_file() {
                 continue;
             }
-            let should_clear = path.extension().is_some_and(|ext| {
-                tracey_core::is_spec_extension(ext)
-                    || ext == "styx"
-                    || tracey_core::is_supported_extension(ext)
-            });
+            let should_clear = tracey_core::is_supported_path(path)
+                || path
+                    .extension()
+                    .is_some_and(|ext| tracey_core::is_spec_extension(ext) || ext == "styx");
             if !should_clear {
                 continue;
             }
@@ -1721,6 +1722,63 @@ mod tests {
         let uri = Backend::symbol_uri_from_path(&project_root, Some("docs/spec/auth.md"))
             .expect("uri should be constructed");
         assert_eq!(uri.path(), "/tmp/project/docs/spec/auth.md");
+    }
+
+    /// Rename walks the workspace itself and used to hand an empty path to
+    /// reference extraction, which matches no language: with the "reverse"
+    /// feature that yields nothing, so rename silently edited nothing.
+    #[test]
+    fn replacement_edits_use_the_real_path_for_rust() {
+        let old_id = parse_rule_id("auth.login").expect("valid rule id");
+        let content = "// r[impl auth.login]\nfn login() {}\n";
+
+        let edits = Backend::replacement_edits_for_file(
+            Path::new("src/auth.rs"),
+            content,
+            &old_id,
+            "auth.signin",
+        );
+
+        assert_eq!(edits.len(), 1, "expected one edit, got {edits:?}");
+        assert_eq!(edits[0].new_text, "auth.signin");
+    }
+
+    /// A line-leading `#` in a Dockerfile is a comment, so rename must reach
+    /// it. This only works when the path selects the Docker syntax.
+    #[test]
+    fn replacement_edits_rename_line_leading_dockerfile_annotation() {
+        let old_id = parse_rule_id("deploy.image.minimal").expect("valid rule id");
+        let content = "# r[impl deploy.image.minimal]\nFROM alpine:3.20\n";
+
+        let edits = Backend::replacement_edits_for_file(
+            Path::new("Dockerfile"),
+            content,
+            &old_id,
+            "deploy.image.slim",
+        );
+
+        assert_eq!(edits.len(), 1, "expected one edit, got {edits:?}");
+        assert_eq!(edits[0].new_text, "deploy.image.slim");
+    }
+
+    /// A trailing `#` is part of the instruction rather than a Docker comment,
+    /// so there is no reference there for rename to rewrite.
+    #[test]
+    fn replacement_edits_skip_trailing_hash_in_dockerfile() {
+        let old_id = parse_rule_id("deploy.image.minimal").expect("valid rule id");
+        let content = "RUN echo built # r[impl deploy.image.minimal]\n";
+
+        let edits = Backend::replacement_edits_for_file(
+            Path::new("Dockerfile"),
+            content,
+            &old_id,
+            "deploy.image.slim",
+        );
+
+        assert!(
+            edits.is_empty(),
+            "a trailing # is not a Docker comment, got {edits:?}"
+        );
     }
 
     #[test]

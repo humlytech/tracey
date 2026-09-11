@@ -146,6 +146,59 @@ steps:
 }
 ```
 
+**JSONC** (`.jsonc`) — the same `//` and `/* */` comments, on strict JSON syntax:
+
+```jsonc
+// r[impl tsconfig.strictness]
+{
+  "compilerOptions": {
+    "strict": true /* r[verify tsconfig.strictness] */
+  }
+}
+```
+
+**Terraform** (`.tf`, `.tfvars`) — HCL accepts `#`, `//` and `/* */`, and a trailing `#` comment may follow a value:
+
+```hcl
+# r[impl infra.logs.retention]
+resource "aws_s3_bucket_lifecycle_configuration" "logs" {
+  bucket = aws_s3_bucket.logs.id
+
+  rule {
+    id     = "expire-logs"
+    status = "Enabled"
+
+    expiration {
+      days = 90 # r[verify infra.logs.retention]
+    }
+  }
+}
+```
+
+**Docker** (`Dockerfile`, suffixed variants such as `Dockerfile.dev`, `*.dockerfile`, and `.dockerignore`) — `#` line comments only:
+
+```dockerfile
+# r[impl deploy.image.minimal]
+FROM alpine:3.20
+
+# r[verify deploy.image.nonroot]
+USER 10001
+```
+
+Docker strips a `#` only when it begins a line, so tracey does the same. A `#` later in an instruction belongs to that instruction, and an annotation written there is not picked up:
+
+```dockerfile
+RUN apk add --no-cache curl # this is passed to the shell, not a Docker comment
+```
+
+The same `#` rule applies to `.dockerignore`:
+
+```
+# r[impl build.context.slim]
+node_modules
+target/
+```
+
 ## StrictDoc-style markers (`@relation`)
 
 If your spec is authored in [StrictDoc](https://strictdoc.readthedocs.io/) — see [Writing Specs](writing-specs.md#strictdoc-format-sdoc) — tracey also recognises StrictDoc's `@relation(...)` annotation in source comments. The two syntaxes coexist freely; both produce references against the same spec.

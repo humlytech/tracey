@@ -3,7 +3,6 @@
 use crate::lexer::{Reqs, extract_from_content};
 use eyre::Result;
 use std::ffi::OsStr;
-#[cfg(feature = "walk")]
 use std::path::Path;
 use std::path::PathBuf;
 
@@ -17,86 +16,174 @@ pub struct ExtractionResult {
 
 /// File extensions that tracey knows how to scan for requirement references.
 pub const SUPPORTED_EXTENSIONS: &[&str] = &[
-    "rs",     // Rust
-    "swift",  // Swift
-    "ts",     // TypeScript
-    "tsx",    // TypeScript JSX
-    "mts",    // TypeScript ES module
-    "cts",    // TypeScript CommonJS
-    "js",     // JavaScript
-    "jsx",    // JavaScript JSX
-    "mjs",    // JavaScript ES module
-    "cjs",    // JavaScript CommonJS
-    "go",     // Go
-    "c",      // C
-    "h",      // C headers
-    "cpp",    // C++
-    "hpp",    // C++ headers
-    "cc",     // C++
-    "cxx",    // C++
-    "m",      // Objective-C
-    "mm",     // Objective-C++
-    "java",   // Java
-    "kt",     // Kotlin
-    "kts",    // Kotlin script
-    "scala",  // Scala
-    "groovy", // Groovy
-    "cs",     // C#
-    "zig",    // Zig
-    "php",    // PHP
-    "py",     // Python
-    "rb",     // Ruby
-    "r",      // R
-    "R",      // R (uppercase)
-    "dart",   // Dart
-    "lua",    // Lua
-    "asm",    // Assembly
-    "s",      // Assembly
-    "S",      // Assembly (uppercase)
-    "pl",     // Perl
-    "pm",     // Perl module
-    "hs",     // Haskell
-    "lhs",    // Literate Haskell
-    "ex",     // Elixir
-    "exs",    // Elixir script
-    "erl",    // Erlang
-    "hrl",    // Erlang header
-    "clj",    // Clojure
-    "cljs",   // ClojureScript
-    "cljc",   // Clojure common
-    "edn",    // EDN
-    "fs",     // F#
-    "fsi",    // F# script
-    "fsx",    // F# script
-    "vb",     // Visual Basic
-    "vbs",    // VBScript
-    "cob",    // COBOL
-    "cbl",    // COBOL
-    "cpy",    // COBOL copybook
-    "jl",     // Julia
-    "d",      // D
-    "ps1",    // PowerShell
-    "psm1",   // PowerShell module
-    "psd1",   // PowerShell data
-    "cmake",  // CMake
-    "ml",     // OCaml
-    "mli",    // OCaml interface
-    "sh",     // Shell/Bash
-    "bash",   // Bash
-    "zsh",    // Zsh
-    "nix",    // Nix
-    "yml",    // YAML
-    "yaml",   // YAML (alternate extension)
-    "json5",  // JSON5
-    "lean",   // Lean
-    "svelte", // Svelte
+    "rs",           // Rust
+    "swift",        // Swift
+    "ts",           // TypeScript
+    "tsx",          // TypeScript JSX
+    "mts",          // TypeScript ES module
+    "cts",          // TypeScript CommonJS
+    "js",           // JavaScript
+    "jsx",          // JavaScript JSX
+    "mjs",          // JavaScript ES module
+    "cjs",          // JavaScript CommonJS
+    "go",           // Go
+    "c",            // C
+    "h",            // C headers
+    "cpp",          // C++
+    "hpp",          // C++ headers
+    "cc",           // C++
+    "cxx",          // C++
+    "m",            // Objective-C
+    "mm",           // Objective-C++
+    "java",         // Java
+    "kt",           // Kotlin
+    "kts",          // Kotlin script
+    "scala",        // Scala
+    "groovy",       // Groovy
+    "cs",           // C#
+    "zig",          // Zig
+    "php",          // PHP
+    "py",           // Python
+    "rb",           // Ruby
+    "r",            // R
+    "R",            // R (uppercase)
+    "dart",         // Dart
+    "lua",          // Lua
+    "asm",          // Assembly
+    "s",            // Assembly
+    "S",            // Assembly (uppercase)
+    "pl",           // Perl
+    "pm",           // Perl module
+    "hs",           // Haskell
+    "lhs",          // Literate Haskell
+    "ex",           // Elixir
+    "exs",          // Elixir script
+    "erl",          // Erlang
+    "hrl",          // Erlang header
+    "clj",          // Clojure
+    "cljs",         // ClojureScript
+    "cljc",         // Clojure common
+    "edn",          // EDN
+    "fs",           // F#
+    "fsi",          // F# script
+    "fsx",          // F# script
+    "vb",           // Visual Basic
+    "vbs",          // VBScript
+    "cob",          // COBOL
+    "cbl",          // COBOL
+    "cpy",          // COBOL copybook
+    "jl",           // Julia
+    "d",            // D
+    "ps1",          // PowerShell
+    "psm1",         // PowerShell module
+    "psd1",         // PowerShell data
+    "cmake",        // CMake
+    "ml",           // OCaml
+    "mli",          // OCaml interface
+    "sh",           // Shell/Bash
+    "bash",         // Bash
+    "zsh",          // Zsh
+    "nix",          // Nix
+    "yml",          // YAML
+    "yaml",         // YAML (alternate extension)
+    "json5",        // JSON5
+    "jsonc",        // JSON with comments
+    "lean",         // Lean
+    "svelte",       // Svelte
+    "tf",           // Terraform (HCL)
+    "tfvars",       // Terraform variable definitions (HCL)
+    "dockerfile",   // Dockerfile (e.g. prod.dockerfile)
+    "dockerignore", // Docker ignore file (e.g. Dockerfile.dev.dockerignore)
 ];
 
+/// File names that tracey knows how to scan even though they carry no
+/// meaningful extension.
+///
+/// Docker identifies its files by name rather than by extension, so
+/// `Dockerfile` and `.dockerignore` have to be recognised whole.
+pub const SUPPORTED_FILENAMES: &[&str] = &[
+    "Dockerfile",    // Docker build recipe
+    ".dockerignore", // Docker build-context exclusions
+];
+
+/// Docker build recipes are commonly suffixed rather than extended, as in
+/// `Dockerfile.dev` or `Dockerfile.builder`. Match that whole family.
+const DOCKERFILE_NAME_PREFIX: &str = "dockerfile.";
+
 /// Check if a file extension is supported for scanning
+///
+/// Files that Docker identifies by name instead of by extension are not
+/// covered here; use [`is_supported_path`] to classify a whole path.
 pub fn is_supported_extension(ext: &OsStr) -> bool {
     ext.to_str()
         .map(|e| SUPPORTED_EXTENSIONS.contains(&e))
         .unwrap_or(false)
+}
+
+/// Canonical language key for a source path, or `None` if tracey cannot scan it.
+///
+/// This is normally just the file extension. Files that Docker identifies by
+/// name rather than extension map onto the synthetic keys `"dockerfile"` and
+/// `"dockerignore"` so that callers can dispatch on a single token.
+pub fn source_language_key(path: &Path) -> Option<&'static str> {
+    if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+        // Compared case-insensitively: `dockerfile` and `Dockerfile` name the
+        // same file on macOS and Windows, and both spellings occur in the wild.
+        let lower = name.to_ascii_lowercase();
+        for known in SUPPORTED_FILENAMES {
+            if lower == known.to_ascii_lowercase() {
+                return Some(docker_key_for_name(&lower));
+            }
+        }
+        if lower.starts_with(DOCKERFILE_NAME_PREFIX) {
+            return Some(docker_key_for_name(&lower));
+        }
+    }
+
+    let ext = path.extension().and_then(|e| e.to_str())?;
+    if let Some(known) = SUPPORTED_EXTENSIONS.iter().copied().find(|e| *e == ext) {
+        return Some(known);
+    }
+
+    // Docker's extension-style spellings vary in case too, as in
+    // `prod.Dockerfile`. Only the two Docker keys are matched this way; every
+    // other extension stays case-sensitive, because tracey distinguishes
+    // extensions such as `.r` and `.R`.
+    match ext.to_ascii_lowercase().as_str() {
+        "dockerfile" => Some("dockerfile"),
+        "dockerignore" => Some("dockerignore"),
+        _ => None,
+    }
+}
+
+/// Pick between the two Docker dialects for a lowercased file name.
+///
+/// BuildKit lets a build recipe carry a sibling ignore file named after it
+/// (`Dockerfile.dev.dockerignore`), so the suffix decides, not the prefix.
+fn docker_key_for_name(lower_name: &str) -> &'static str {
+    if lower_name.ends_with("dockerignore") {
+        "dockerignore"
+    } else {
+        "dockerfile"
+    }
+}
+
+/// Check if tracey can scan the file at this path for requirement references.
+///
+/// Prefer this over [`is_supported_extension`]: it also recognises the files
+/// Docker identifies by name, such as `Dockerfile` and `.dockerignore`.
+pub fn is_supported_path(path: &Path) -> bool {
+    source_language_key(path).is_some()
+}
+
+/// Human-readable list of the file types tracey can scan, for diagnostics.
+pub fn supported_file_types_display() -> String {
+    SUPPORTED_EXTENSIONS
+        .iter()
+        .map(|ext| format!(".{ext}"))
+        .chain(SUPPORTED_FILENAMES.iter().map(|name| name.to_string()))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// Check if a file extension identifies a specification source tracey can load.
@@ -272,11 +359,8 @@ impl Sources for WalkSources {
 
                     let path = entry.path();
 
-                    // Only supported file extensions
-                    if path
-                        .extension()
-                        .is_none_or(|ext| !is_supported_extension(ext))
-                    {
+                    // Only file types tracey knows how to scan
+                    if !is_supported_path(path) {
                         return ignore::WalkState::Continue;
                     }
 
@@ -382,15 +466,20 @@ fn is_excluded(path: &Path, root: &Path, patterns: &[String]) -> bool {
 /// e.g., "../dodeca/crates/bearmark/**/*.rs" -> "../dodeca/crates/bearmark"
 #[cfg(feature = "walk")]
 fn extract_cross_workspace_base(pattern: &str) -> String {
-    // Find the first occurrence of "**" or "*"
-    if let Some(wildcard_pos) = pattern.find("**").or_else(|| pattern.find('*')) {
-        // Get everything before the wildcard, then trim trailing slash
-        let base = &pattern[..wildcard_pos];
-        base.trim_end_matches('/').to_string()
-    } else {
+    // The earliest `*` bounds the base, whether or not it opens a `**`.
+    // Searching for "**" first would skip past an earlier single `*` and leave
+    // a wildcard in the base, as in `services/*/src/**/*.rs`.
+    let Some(wildcard_pos) = pattern.find('*') else {
         // No wildcards, use the pattern as-is
-        pattern.to_string()
-    }
+        return pattern.to_string();
+    };
+    // A wildcard may sit part-way into a path segment, as in `Dockerfile.*`.
+    // Only whole leading segments name a directory, so cut back to the last
+    // separator rather than to the wildcard itself.
+    let split_at = pattern[..wildcard_pos]
+        .rfind('/')
+        .map_or(0, |slash| slash + 1);
+    pattern[..split_at].trim_end_matches('/').to_string()
 }
 
 /// Adjust a cross-workspace pattern to be relative to its resolved base
@@ -606,6 +695,50 @@ mod tests {
     }
 
     #[test]
+    fn test_memory_sources_jsonc() {
+        let result = Reqs::extract(
+            MemorySources::new()
+                .add("tsconfig.jsonc", "// r[impl jsonc.req.one]")
+                .add("settings.jsonc", "// r[verify jsonc.req.two]")
+                .add("other.jsonc", "/* r[impl jsonc.req.three] */"),
+        )
+        .unwrap();
+
+        assert_eq!(result.reqs.len(), 3);
+        assert_eq!(result.reqs.references[0].req_id, "jsonc.req.one");
+        assert_eq!(result.reqs.references[1].req_id, "jsonc.req.two");
+        assert_eq!(result.reqs.references[2].req_id, "jsonc.req.three");
+        assert!(result.warnings.is_empty());
+    }
+
+    #[cfg(feature = "reverse")]
+    #[test]
+    fn test_memory_sources_jsonc_reverse() {
+        let result = Reqs::extract(
+            MemorySources::new()
+                .add("tsconfig.jsonc", "// r[impl jsonc.one]")
+                .add(
+                    "settings.jsonc",
+                    "{\n  \"key\": \"value\" /* r[verify jsonc.two] */\n}",
+                ),
+        )
+        .unwrap();
+
+        assert_eq!(result.reqs.len(), 2);
+        assert_eq!(result.reqs.references[0].req_id, "jsonc.one");
+        assert_eq!(
+            result.reqs.references[0].verb,
+            crate::lexer::RefVerb::Impl
+        );
+        assert_eq!(result.reqs.references[1].req_id, "jsonc.two");
+        assert_eq!(
+            result.reqs.references[1].verb,
+            crate::lexer::RefVerb::Verify
+        );
+        assert!(result.warnings.is_empty());
+    }
+
+    #[test]
     fn test_memory_sources_mixed_languages() {
         let result = Reqs::extract(
             MemorySources::new()
@@ -681,12 +814,98 @@ mod tests {
         assert!(is_supported_extension(OsStr::new("yml")));
         assert!(is_supported_extension(OsStr::new("yaml")));
         assert!(is_supported_extension(OsStr::new("json5")));
+        assert!(is_supported_extension(OsStr::new("jsonc")));
         assert!(is_supported_extension(OsStr::new("lean")));
         assert!(is_supported_extension(OsStr::new("svelte")));
+
+        assert!(is_supported_extension(OsStr::new("tf")));
+        assert!(is_supported_extension(OsStr::new("tfvars")));
 
         assert!(!is_supported_extension(OsStr::new("md")));
         assert!(!is_supported_extension(OsStr::new("txt")));
         assert!(!is_supported_extension(OsStr::new("json")));
+    }
+
+    /// Docker identifies its files by name, so classification cannot go through
+    /// the extension alone.
+    #[test]
+    fn test_source_language_key_for_named_docker_files() {
+        let key = |p: &str| source_language_key(Path::new(p));
+
+        assert_eq!(key("Dockerfile"), Some("dockerfile"));
+        assert_eq!(key("build/Dockerfile"), Some("dockerfile"));
+        assert_eq!(key("dockerfile"), Some("dockerfile"));
+        assert_eq!(key("Dockerfile.dev"), Some("dockerfile"));
+        assert_eq!(key("prod.dockerfile"), Some("dockerfile"));
+
+        assert_eq!(key(".dockerignore"), Some("dockerignore"));
+        assert_eq!(key("app/.dockerignore"), Some("dockerignore"));
+        // BuildKit lets an ignore file be named after its build recipe.
+        assert_eq!(key("Dockerfile.dev.dockerignore"), Some("dockerignore"));
+
+        // The extension-style spellings are case-insensitive too.
+        assert_eq!(key("prod.Dockerfile"), Some("dockerfile"));
+        assert_eq!(key("prod.DOCKERFILE"), Some("dockerfile"));
+        assert_eq!(key("build/prod.DockerIgnore"), Some("dockerignore"));
+        assert_eq!(key("DOCKERFILE"), Some("dockerfile"));
+        assert_eq!(key(".DOCKERIGNORE"), Some("dockerignore"));
+
+        // Case-sensitivity is unchanged for every other language, which is
+        // what keeps `.r` and `.R` distinct entries.
+        assert_eq!(key("script.R"), Some("R"));
+        assert_eq!(key("script.r"), Some("r"));
+        assert_eq!(key("lib.RS"), None);
+
+        assert_eq!(key("main.tf"), Some("tf"));
+        assert_eq!(key("prod.tfvars"), Some("tfvars"));
+        assert_eq!(key("lib.rs"), Some("rs"));
+
+        assert_eq!(key("Makefile"), None);
+        assert_eq!(key("notes.txt"), None);
+        assert_eq!(key("docker-compose.override"), None);
+    }
+
+    /// `.dockerignore` and `Dockerfile` have no extension at all, so the old
+    /// extension-only gate dropped them before include patterns were consulted.
+    #[test]
+    fn test_supported_path_accepts_extensionless_docker_files() {
+        assert!(is_supported_path(Path::new("Dockerfile")));
+        assert!(is_supported_path(Path::new(".dockerignore")));
+        assert!(!is_supported_path(Path::new("Makefile")));
+    }
+
+    /// A wildcard part-way into a segment, as in `Dockerfile.*`, must not be
+    /// mistaken for a directory; only whole leading segments name one.
+    #[cfg(feature = "walk")]
+    #[test]
+    fn test_extract_cross_workspace_base_keeps_whole_segments() {
+        assert_eq!(
+            extract_cross_workspace_base("../infra/Dockerfile.*"),
+            "../infra"
+        );
+        assert_eq!(extract_cross_workspace_base("../infra/*.tf"), "../infra");
+        assert_eq!(
+            extract_cross_workspace_base("../dodeca/crates/**/*.rs"),
+            "../dodeca/crates"
+        );
+        assert_eq!(
+            extract_cross_workspace_base("../infra/Dockerfile"),
+            "../infra/Dockerfile"
+        );
+        // The earliest wildcard bounds the base, even when a `**` follows it.
+        assert_eq!(
+            extract_cross_workspace_base("../services/*/src/**/*.rs"),
+            "../services"
+        );
+    }
+
+    #[test]
+    fn test_supported_file_types_display_lists_named_files() {
+        let display = supported_file_types_display();
+        assert!(display.contains(".rs"));
+        assert!(display.contains(".tf"));
+        assert!(display.contains("Dockerfile"));
+        assert!(display.contains(".dockerignore"));
     }
 
     /// The extension gate in `WalkSources` runs *before* include patterns are
@@ -726,6 +945,48 @@ mod tests {
                 "js.req.mjs",
                 "js.req.mts",
                 "js.req.ts",
+            ]
+        );
+    }
+
+    /// The walker's file-type gate used to read the extension only, which
+    /// dropped `Dockerfile` and `.dockerignore` before they could be scanned.
+    #[cfg(feature = "walk")]
+    #[test]
+    fn test_walk_sources_scans_terraform_and_docker_files() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let root = temp.path();
+
+        std::fs::write(root.join("main.tf"), "# r[impl infra.bucket]\n").unwrap();
+        std::fs::write(root.join("prod.tfvars"), "# r[impl infra.region]\n").unwrap();
+        std::fs::write(
+            root.join("Dockerfile"),
+            "# r[impl deploy.image]\nFROM scratch\n",
+        )
+        .unwrap();
+        std::fs::write(root.join("Dockerfile.dev"), "# r[impl deploy.dev-image]\n").unwrap();
+        std::fs::write(root.join(".dockerignore"), "# r[impl deploy.context]\n").unwrap();
+        // Not a file type tracey scans, so its annotation must stay invisible.
+        std::fs::write(root.join("Makefile"), "# r[impl should.not.appear]\n").unwrap();
+
+        let result = Reqs::extract(WalkSources::new(root)).unwrap();
+
+        let mut found: Vec<String> = result
+            .reqs
+            .references
+            .iter()
+            .map(|r| r.req_id.to_string())
+            .collect();
+        found.sort_unstable();
+
+        assert_eq!(
+            found,
+            vec![
+                "deploy.context",
+                "deploy.dev-image",
+                "deploy.image",
+                "infra.bucket",
+                "infra.region",
             ]
         );
     }

@@ -1518,17 +1518,21 @@ pub fn extract_refs(path: &Path, source: &str) -> Vec<FullReqRef> {
 
 /// Extract all requirement references and malformed-reference warnings.
 pub fn extract_refs_with_warnings(path: &Path, source: &str) -> ExtractedRefs {
-    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+    // Not always the literal extension: Docker files are identified by name.
+    let Some(key) = crate::sources::source_language_key(path) else {
+        return ExtractedRefs::default();
+    };
 
-    let language = match ext {
+    let language = match key {
         "rs" => arborium_rust::language(),
         "swift" => arborium_swift::language(),
         "go" => arborium_go::language(),
         "java" => arborium_java::language(),
         "py" => arborium_python::language(),
-        // json5 shares // and /* */ comment syntax with JS/TS; reuse the TS grammar
-        // so that tree-sitter can identify comment nodes in the reverse path.
-        "ts" | "tsx" | "js" | "jsx" | "mts" | "cts" | "mjs" | "cjs" | "json5" => {
+        // json5 and jsonc share // and /* */ comment syntax with JS/TS; reuse
+        // the TS grammar so that tree-sitter can identify comment nodes in the
+        // reverse path.
+        "ts" | "tsx" | "js" | "jsx" | "mts" | "cts" | "mjs" | "cjs" | "json5" | "jsonc" => {
             arborium_typescript::language()
         }
         "php" => arborium_php::language(),
@@ -1556,6 +1560,12 @@ pub fn extract_refs_with_warnings(path: &Path, source: &str) -> ExtractedRefs {
         "nix" => arborium_nix::language(),
         "svelte" => arborium_svelte::language(),
         "yml" | "yaml" => arborium_yaml::language(),
+        // Terraform is written in HCL, which comments with #, // and /* */.
+        "tf" | "tfvars" => arborium_hcl::language(),
+        // A .dockerignore is not valid Dockerfile syntax, but it shares the #
+        // comment token, and tree-sitter keeps comment nodes inside the error
+        // subtree it builds for the unrecognised lines.
+        "dockerfile" | "dockerignore" => arborium_dockerfile::language(),
         _ => return ExtractedRefs::default(),
     };
 

@@ -63,6 +63,7 @@ export const LANG_DEVICON_MAP: Record<string, string> = {
   rb: "devicon-ruby-plain",
   md: "devicon-markdown-original",
   json: "devicon-json-plain",
+  jsonc: "devicon-json-plain",
   yaml: "devicon-yaml-plain",
   yml: "devicon-yaml-plain",
   toml: "devicon-toml-plain",
@@ -76,6 +77,10 @@ export const LANG_DEVICON_MAP: Record<string, string> = {
   scala: "devicon-scala-plain",
   zig: "devicon-zig-original",
   lua: "devicon-lua-plain",
+  tf: "devicon-terraform-plain",
+  tfvars: "devicon-terraform-plain",
+  dockerfile: "devicon-docker-plain",
+  dockerignore: "devicon-docker-plain",
 };
 
 // Tab icon names (Lucide)
