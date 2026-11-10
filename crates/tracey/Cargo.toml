@@ -64,6 +64,9 @@ strictdoc-parser = { workspace = true }
 # Syntax highlighting for source files
 arborium = { workspace = true }
 
+# Parses implementation files in parallel on a cold index build
+rayon = { workspace = true }
+
 # HTTP server for serve command
 axum = { workspace = true }
 tokio = { workspace = true }

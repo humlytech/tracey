@@ -605,12 +605,47 @@ fn extract_marker_prefix_from_content(
     Some(prefix.to_string())
 }
 
-async fn get_cached_source_file(
+/// A source file whose content is read but not yet parsed.
+struct PendingParse {
+    canonical: PathBuf,
+    content: String,
+    content_hash: u64,
+    file_len: u64,
+    modified_nanos: Option<u128>,
+}
+
+impl PendingParse {
+    /// CPU-bound and free of shared state, so cold files parse in parallel.
+    fn parse(self) -> (PathBuf, CachedSourceFile) {
+        let reqs = Reqs::extract_from_content(&self.canonical, &self.content);
+        let code_units = tracey_core::code_units::extract(&self.canonical, &self.content).units;
+        let parsed = CachedSourceFile {
+            content_hash: self.content_hash,
+            file_len: self.file_len,
+            modified_nanos: self.modified_nanos,
+            content: self.content,
+            refs: reqs.references,
+            parse_warnings: reqs.warnings,
+            code_units,
+        };
+        (self.canonical, parsed)
+    }
+}
+
+/// What the cache knows about one source file.
+enum SourceLookup {
+    Cached(CachedSourceFile),
+    NeedsParse(PendingParse),
+}
+
+/// Resolves a source file against the cache, reading it when the cache has no
+/// current entry. Counts every hit in `stats`; the caller counts each parse.
+async fn lookup_source_file(
     path: &Path,
     overlay: &FileOverlay,
     cache: &mut BuildCache,
     stats: &mut CacheStats,
-) -> std::io::Result<CachedSourceFile> {
+) -> std::io::Result<SourceLookup> {
     let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
 
     let overlay_content = overlay
@@ -624,24 +659,15 @@ async fn get_cached_source_file(
             && entry.content_hash == content_hash
         {
             stats.hash_hits += 1;
-            return Ok(entry.clone());
+            return Ok(SourceLookup::Cached(entry.clone()));
         }
-
-        let reqs = Reqs::extract_from_content(&canonical, &content);
-        let code_units = tracey_core::code_units::extract(&canonical, &content).units;
-        let parsed = CachedSourceFile {
-            content_hash,
+        return Ok(SourceLookup::NeedsParse(PendingParse {
+            canonical,
             file_len: content.len() as u64,
-            modified_nanos: None,
             content,
-            refs: reqs.references,
-            parse_warnings: reqs.warnings,
-            code_units,
-        };
-        stats.misses += 1;
-        stats.reparsed += 1;
-        cache.source_files.insert(canonical, parsed.clone());
-        return Ok(parsed);
+            content_hash,
+            modified_nanos: None,
+        }));
     }
 
     let metadata = tokio::fs::metadata(&canonical).await?;
@@ -653,7 +679,7 @@ async fn get_cached_source_file(
         && entry.modified_nanos == modified_nanos
     {
         stats.metadata_hits += 1;
-        return Ok(entry.clone());
+        return Ok(SourceLookup::Cached(entry.clone()));
     }
 
     let content = read_file_with_overlay(&canonical, overlay).await?;
@@ -667,24 +693,30 @@ async fn get_cached_source_file(
         updated.modified_nanos = modified_nanos;
         cache.source_files.insert(canonical, updated.clone());
         stats.hash_hits += 1;
-        return Ok(updated);
+        return Ok(SourceLookup::Cached(updated));
     }
 
-    let reqs = Reqs::extract_from_content(&canonical, &content);
-    let code_units = tracey_core::code_units::extract(&canonical, &content).units;
-    let parsed = CachedSourceFile {
+    Ok(SourceLookup::NeedsParse(PendingParse {
+        canonical,
+        content,
         content_hash,
         file_len,
         modified_nanos,
-        content,
-        refs: reqs.references,
-        parse_warnings: reqs.warnings,
-        code_units,
-    };
-    stats.misses += 1;
-    stats.reparsed += 1;
-    cache.source_files.insert(canonical, parsed.clone());
-    Ok(parsed)
+    }))
+}
+
+/// Parses `pending` across the rayon pool, off the async runtime's threads.
+/// The result keeps the input's order.
+async fn parse_in_parallel(pending: Vec<PendingParse>) -> Vec<(PathBuf, CachedSourceFile)> {
+    if pending.is_empty() {
+        return Vec::new();
+    }
+    tokio::task::spawn_blocking(move || {
+        use rayon::prelude::*;
+        pending.into_par_iter().map(PendingParse::parse).collect()
+    })
+    .await
+    .expect("source parse task panicked")
 }
 
 #[derive(Clone)]
@@ -814,13 +846,33 @@ fn path_matches_any_root(path: &Path, roots: &[ScanRootPattern]) -> bool {
     roots.iter().any(|r| path_matches_root_pattern(path, r))
 }
 
+/// Glob patterns compiled once, so a walk matches each path without compiling
+/// a regex per path. A pattern that does not parse matches nothing.
+pub(crate) struct PatternSet(Vec<globset::GlobMatcher>);
+
+impl PatternSet {
+    pub(crate) fn new<S: AsRef<str>>(patterns: &[S]) -> Self {
+        Self(
+            patterns
+                .iter()
+                .filter_map(|p| globset::Glob::new(p.as_ref()).ok())
+                .map(|g| g.compile_matcher())
+                .collect(),
+        )
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    pub(crate) fn is_match(&self, relative: &Path) -> bool {
+        self.0.iter().any(|m| m.is_match(relative))
+    }
+}
+
 /// Match a project-relative path against a set of `test_include` globs.
-fn matches_any_glob(relative: &Path, patterns: &[&str]) -> bool {
-    patterns.iter().any(|pattern| {
-        globset::Glob::new(pattern)
-            .map(|g| g.compile_matcher().is_match(relative))
-            .unwrap_or(false)
-    })
+fn matches_any_glob(relative: &Path, patterns: &PatternSet) -> bool {
+    patterns.is_match(relative)
 }
 
 /// Express `path` relative to the project root, accepting either the root as
@@ -835,16 +887,15 @@ fn project_relative<'a>(
         .ok()
 }
 
-fn path_matches_excludes(path: &Path, roots: &[ScanRootPattern], exclude: &[String]) -> bool {
+fn path_matches_excludes(path: &Path, roots: &[ScanRootPattern], exclude: &PatternSet) -> bool {
+    if exclude.is_empty() {
+        return false;
+    }
     roots.iter().any(|r| {
         let Ok(relative) = path.strip_prefix(&r.root) else {
             return false;
         };
-        exclude.iter().any(|pattern| {
-            globset::Glob::new(pattern)
-                .map(|g| g.compile_matcher().is_match(relative))
-                .unwrap_or(false)
-        })
+        exclude.is_match(relative)
     })
 }
 
@@ -854,6 +905,7 @@ fn full_walk_for_roots(
     include_markdown_only: bool,
     exclude: &[String],
 ) -> BTreeSet<PathBuf> {
+    let exclude = PatternSet::new(exclude);
     let mut out = BTreeSet::new();
     for root_pattern in roots {
         let walker = ignore::WalkBuilder::new(&root_pattern.root)
@@ -883,7 +935,7 @@ fn full_walk_for_roots(
             if !path_matches_root_pattern(path, root_pattern) {
                 continue;
             }
-            if path_matches_excludes(path, roots, exclude) {
+            if path_matches_excludes(path, roots, &exclude) {
                 continue;
             }
             let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
@@ -901,6 +953,7 @@ fn update_cached_scan_paths(
     include_markdown_only: bool,
     exclude: &[String],
 ) {
+    let exclude = PatternSet::new(exclude);
     for changed in changed_files {
         let exists = changed.exists();
         let ext_ok = if include_markdown_only {
@@ -914,7 +967,7 @@ fn update_cached_scan_paths(
         };
         let included = ext_ok
             && path_matches_any_root(changed, roots)
-            && !path_matches_excludes(changed, roots, exclude);
+            && !path_matches_excludes(changed, roots, &exclude);
         let canonical = changed
             .canonicalize()
             .unwrap_or_else(|_| changed.to_path_buf());
@@ -1267,9 +1320,10 @@ async fn scan_impl_files(
     let (mut files, warnings, did_full_walk) =
         get_cached_impl_scan_paths(project_root, include, exclude, changed_files, cache);
     let (impl_roots, _) = build_scan_roots(project_root, include);
+    let exclude_set = PatternSet::new(exclude);
     for overlay_path in overlay.keys() {
         if path_matches_any_root(overlay_path, &impl_roots)
-            && !path_matches_excludes(overlay_path, &impl_roots, exclude)
+            && !path_matches_excludes(overlay_path, &impl_roots, &exclude_set)
         {
             files.insert(overlay_path.clone());
         }
@@ -1280,17 +1334,53 @@ async fn scan_impl_files(
     let mut code_units_by_file: BTreeMap<PathBuf, Vec<CodeUnit>> = BTreeMap::new();
     let mut file_contents: BTreeMap<PathBuf, String> = BTreeMap::new();
     let mut reqs_by_file: BTreeMap<PathBuf, Reqs> = BTreeMap::new();
+
+    // Each file's outcome, in walk order. Files the cache cannot answer are
+    // read here and parsed together below, so a cold build uses every core.
+    enum Outcome {
+        Ready(CachedSourceFile),
+        Pending(usize),
+        Failed(String),
+    }
+    let mut outcomes: Vec<(PathBuf, Outcome)> = Vec::with_capacity(files.len());
+    let mut pending: Vec<PendingParse> = Vec::new();
     for path in files {
         if !is_supported_path(&path) {
             let reason = match path.extension() {
                 Some(ext) => format!("unsupported file extension '.{}'", ext.to_string_lossy()),
                 None => "file has no extension".to_string(),
             };
-            parse_failures.push((path.clone(), reason));
+            outcomes.push((path, Outcome::Failed(reason)));
             continue;
         }
+        let outcome = match lookup_source_file(&path, overlay, cache, stats).await {
+            Ok(SourceLookup::Cached(parsed)) => Outcome::Ready(parsed),
+            Ok(SourceLookup::NeedsParse(p)) => {
+                pending.push(p);
+                Outcome::Pending(pending.len() - 1)
+            }
+            Err(err) => Outcome::Failed(format!("failed to read/parse file: {err}")),
+        };
+        outcomes.push((path, outcome));
+    }
 
-        match get_cached_source_file(&path, overlay, cache, stats).await {
+    let mut parsed_files: Vec<Option<CachedSourceFile>> = Vec::with_capacity(pending.len());
+    for (canonical, parsed) in parse_in_parallel(pending).await {
+        stats.misses += 1;
+        stats.reparsed += 1;
+        cache.source_files.insert(canonical, parsed.clone());
+        parsed_files.push(Some(parsed));
+    }
+
+    for (path, outcome) in outcomes {
+        let parsed = match outcome {
+            Outcome::Ready(parsed) => Ok(parsed),
+            Outcome::Pending(i) => Ok(parsed_files[i]
+                .take()
+                .expect("each pending parse is consumed once")),
+            Outcome::Failed(reason) => Err(reason),
+        };
+        match parsed {
             Ok(parsed) => {
                 reqs_by_file.insert(
                     path.clone(),
@@ -1306,9 +1396,7 @@ async fn scan_impl_files(
                 }
                 file_contents.insert(path, parsed.content);
             }
-            Err(err) => {
-                parse_failures.push((path, format!("failed to read/parse file: {err}")));
-            }
+            Err(reason) => parse_failures.push((path, reason)),
         }
     }
     (
@@ -2550,12 +2638,8 @@ pub async fn build_dashboard_data_with_overlay_and_cache(
         .unwrap_or_else(|_| project_root.to_path_buf());
     for spec_config in &config.specs {
         for impl_config in &spec_config.impls {
-            let test_patterns: Vec<&str> = impl_config
-                .test_include
-                .iter()
-                .map(|t| t.as_str())
-                .collect();
-            if !test_patterns.is_empty() {
+            let test_patterns = PatternSet::new(&impl_config.test_include);
+            if !impl_config.test_include.is_empty() {
                 let impl_key: ImplKey = (spec_config.name.clone(), impl_config.name.clone());
                 let impl_test_files = test_files_by_impl.entry(impl_key).or_default();
                 // Store the canonical path: the impl scan resolves symlinks, so
@@ -3046,6 +3130,7 @@ async fn load_spec_content(
 
     // Collect all matching files with their content and weight
     let mut files: Vec<(String, String, i32)> = Vec::new(); // (relative_path, content, weight)
+    let spec_patterns = PatternSet::new(patterns);
 
     let walker = WalkBuilder::new(root)
         .follow_links(true)
@@ -3063,12 +3148,7 @@ async fn load_spec_content(
         let relative = path.strip_prefix(root).unwrap_or(path);
 
         // Check if path matches any of the patterns
-        let matches_any = patterns.iter().any(|p| {
-            globset::Glob::new(p)
-                .map(|g| g.compile_matcher().is_match(relative))
-                .unwrap_or(false)
-        });
-        if !matches_any {
+        if !spec_patterns.is_match(relative) {
             continue;
         }
 
@@ -3306,5 +3386,132 @@ mod scan_root_tests {
             split_glob_prefix("crates/*-core/**/*.rs"),
             ("crates", "*-core/**/*.rs")
         );
+    }
+}
+
+#[cfg(test)]
+mod scan_speed_tests {
+    use super::{BuildCache, CacheStats, FileOverlay, PatternSet, Reqs, scan_impl_files};
+    use std::path::{Path, PathBuf};
+
+    #[test]
+    fn pattern_set_ignores_a_pattern_that_does_not_parse() {
+        let set = PatternSet::new(&["[unclosed", "**/node_modules/**"]);
+        assert!(set.is_match(Path::new("a/node_modules/x.ts")));
+        assert!(!set.is_match(Path::new("src/x.ts")));
+
+        let only_invalid = PatternSet::new(&["[unclosed"]);
+        assert!(only_invalid.is_empty());
+        assert!(!only_invalid.is_match(Path::new("[unclosed")));
+    }
+
+    fn write(root: &Path, rel: &str, content: &str) {
+        let path = root.join(rel);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, content).unwrap();
+    }
+
+    /// Enough files that the rayon pool parses several at once.
+    fn fixture() -> (tempfile::TempDir, PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        for i in 0..40 {
+            write(
+                &root,
+                &format!("src/m{i:02}.ts"),
+                &format!("// r[impl spec.rule-{i}]\nexport function f{i}() {{ return {i}; }}\n"),
+            );
+        }
+        write(
+            &root,
+            "src/skip/node_modules/dep.ts",
+            "// r[impl spec.excluded]\n",
+        );
+        write(&root, "src/broken.ts", "// r[impl spec.rule-x+]\n");
+        (dir, root)
+    }
+
+    async fn scan(
+        root: &Path,
+        overlay: &FileOverlay,
+        cache: &mut BuildCache,
+        stats: &mut CacheStats,
+    ) -> (String, String, Vec<PathBuf>, Vec<PathBuf>) {
+        let include = vec!["src/**/*.ts".to_string()];
+        let exclude = vec!["**/node_modules/**".to_string()];
+        let (refs, warnings, failures, _, units, contents, _, _) =
+            scan_impl_files(root, &include, &exclude, overlay, cache, &[], stats).await;
+        assert!(failures.is_empty(), "unexpected failures: {failures:?}");
+        (
+            format!("{refs:?}"),
+            format!("{warnings:?}"),
+            units.into_keys().collect(),
+            contents.into_keys().collect(),
+        )
+    }
+
+    /// The parallel parse yields what parsing one file at a time, in walk
+    /// order, yields: the same references and warnings in the same order.
+    #[tokio::test]
+    async fn parallel_parse_matches_a_serial_parse_in_walk_order() {
+        let (_dir, root) = fixture();
+        let mut overlay = FileOverlay::new();
+        let unsaved = root.join("src/unsaved.ts");
+        overlay.insert(unsaved.clone(), "// r[impl spec.unsaved]\n".to_string());
+
+        let mut cache = BuildCache::default();
+        let mut stats = CacheStats::default();
+        let (refs, warnings, _, contents) = scan(&root, &overlay, &mut cache, &mut stats).await;
+
+        let mut expected_refs = Vec::new();
+        let mut expected_warnings = Vec::new();
+        for path in &contents {
+            let content = overlay
+                .get(path)
+                .cloned()
+                .unwrap_or_else(|| std::fs::read_to_string(path).unwrap());
+            let reqs = Reqs::extract_from_content(path, &content);
+            expected_refs.extend(reqs.references);
+            expected_warnings.extend(reqs.warnings);
+        }
+        assert_eq!(refs, format!("{expected_refs:?}"));
+        assert_eq!(warnings, format!("{expected_warnings:?}"));
+        assert!(
+            !expected_warnings.is_empty(),
+            "the fixture's malformed marker warns"
+        );
+
+        let mut sorted = contents.clone();
+        sorted.sort();
+        assert_eq!(contents, sorted, "files come back in walk order");
+        assert_eq!(
+            contents.len(),
+            42,
+            "40 files, the malformed one and the overlay"
+        );
+        assert!(contents.contains(&unsaved));
+        assert!(
+            !contents
+                .iter()
+                .any(|p| p.to_string_lossy().contains("node_modules"))
+        );
+        assert_eq!(stats.misses, 42);
+        assert_eq!(stats.reparsed, 42);
+    }
+
+    /// A second build over the same cache parses nothing again.
+    #[tokio::test]
+    async fn second_build_over_the_same_cache_counts_every_file_as_a_hit() {
+        let (_dir, root) = fixture();
+        let overlay = FileOverlay::new();
+        let mut cache = BuildCache::default();
+        let first = scan(&root, &overlay, &mut cache, &mut CacheStats::default()).await;
+
+        let mut stats = CacheStats::default();
+        let second = scan(&root, &overlay, &mut cache, &mut stats).await;
+        assert_eq!(first, second);
+        assert_eq!(stats.misses, 0);
+        assert_eq!(stats.reparsed, 0);
+        assert_eq!(stats.metadata_hits + stats.hash_hits, 41);
     }
 }
