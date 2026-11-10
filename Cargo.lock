@@ -4442,6 +4442,7 @@ dependencies = [
  "notify",
  "open",
  "owo-colors",
+ "rayon",
  "roam",
  "roam-core",
  "roam-local",
